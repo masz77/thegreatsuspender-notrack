@@ -1,3 +1,11 @@
+---
+type: concept
+title: Manifest V3 Migration
+description: Architecture and lifecycle rules for the MV2→MV3 service-worker migration of the extension.
+tags: [manifest-v3, service-worker, background, lifecycle, migration]
+timestamp: 2026-07-05
+---
+
 # Manifest V3 Migration
 
 ## Overview
@@ -14,7 +22,7 @@ Chrome removed Manifest V2 support (enterprise policy escape hatch ended with Ch
 | Suspended tab | `suspended.html` becomes self-initialising: it loads gs* libs itself plus `gsSuspendedTab.js` and reads its state from the URL hash, settings, and IndexedDB. Background communicates via `chrome.tabs.sendMessage` | `chrome.extension.getViews()` no longer exists; the worker cannot touch another page's DOM |
 | Other HTML pages | Each page loads the gs* libs it needs via `<script>` tags; calls into background state go through a small `tgs` RPC over `chrome.runtime.sendMessage` | Replaces `getBackgroundPage().tgs.setViewGlobals()`; libs are stateless against shared chrome.storage/IndexedDB so local copies are safe |
 | Auto-suspend timers | Per-tab `chrome.alarms` (`gsAutoSuspend:<tabId>`) instead of hour-long `setTimeout` | Worker dies after ~30s idle; alarms survive |
-| Periodic jobs | `chrome.alarms` for session metrics (15 min) and notice check (12 h) | Same lifetime reason |
+| Periodic jobs | `chrome.alarms` for session metrics (15 min) | Same lifetime reason. (No notice-check alarm exists — the MV2 `noticeCheckInterval` was dead code and was removed; notices are fetched on-demand via the `requestNotice` RPC.) |
 | Tab runtime state | `_tabStateByTabId` mirrored to `chrome.storage.session`, rehydrated on worker start | Worker restarts must not lose unsuspend-on-reload/scroll state |
 | Favicons | `chrome.runtime.getURL('/_favicon/...')` + `favicon` permission; canvas work via `OffscreenCanvas`/`createImageBitmap` | `chrome://favicon/*` and DOM `Image`/canvas are unavailable in MV3 workers |
 | Script injection | `chrome.scripting.executeScript` with `files` / `func`+`args` | `chrome.tabs.executeScript` (incl. code strings) removed in MV3 |
@@ -43,8 +51,18 @@ Chrome removed Manifest V2 support (enterprise policy escape hatch ended with Ch
 - Pages → background: `chrome.runtime.sendMessage({ action: 'tgsRpc', fn, args })` against an allowlist.
 - Background → suspended tabs / content scripts: `chrome.tabs.sendMessage`.
 
+## Service-worker lifecycle (post-review hardening)
+
+An adversarial code review surfaced a class of warm-wake bugs: the MV3 service worker dies after ~30s idle and **re-runs the whole module on every wake**. The original spec treated every wake like a cold start, which broke core behaviour. These rules are load-bearing — a future editor MUST preserve them (see `/RADICAL-DECISIONS.txt` RD-17, RD-18, and RD-19 for the two review findings deliberately left unchanged):
+
+- **`resetAutoSuspendTimerForAllTabs()` runs ONLY on cold start.** Alarms persist across worker deaths; re-running the reset on every wake recreated each tab's alarm at the full `SUSPEND_TIME`, so with any activity more frequent than the interval no tab ever auto-suspended (core feature dead).
+- **`gsSession.initialisationMode` defaults `false`.** It is cleared by `runStartupChecks`, which is cold-start-only; defaulting it `true` left every warm worker reporting "initialising" forever (recovery-page Restore hung, popup polled forever, permanent keepalive).
+- **`sessionId` is persisted to `chrome.storage.session` and rehydrated.** Regenerating it per wake failed every suspended tab's session check (constant reinit churn) and filled history with duplicate current-sessions that evicted real history at N=5.
+- **`gsFavicon` default fingerprints are cached in `chrome.storage.session`.** Rebuilding them (~7 image decodes) on every wake ran inside the init critical path that gates all handlers.
+
 ## Security Considerations
 
 - CSP tightens to MV3 `extension_pages` form; no remote code, no new origins.
+- The suspended-tab URL sink writes via `textContent`, not `innerHTML`: the `url=` hash param is `decodeURIComponent`'d and `suspended.html` is web-accessible, so unencoded markup would inject into the privileged `chrome-extension://` origin (see `/RADICAL-DECISIONS.txt` RD-18).
 - The tgs RPC dispatches only allowlisted function names; messages from web pages cannot reach it (content scripts use distinct message shapes, and `web_accessible_resources` stays limited to `suspended.html`).
 - No new permissions beyond MV3 mechanical replacements (`scripting`, `alarms`, `favicon`, `offscreen` not needed).

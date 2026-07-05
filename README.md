@@ -23,6 +23,36 @@ This project is a fork from [v7.1.8 of The Great Suspender](https://github.com/g
 
 This work carries no guarantees only to the best of my ability in 2 hours using notepad2 & AstroGrep. I am not a developer and do not intend to spend much time keeping this extension updated.
 
+### Why this fork exists: Manifest V3
+
+Chrome has finished removing support for **Manifest V2** extensions. The enterprise
+policy that could temporarily re-enable them (`ExtensionManifestV2Availability`)
+expired in mid-2025, so on current Chrome the tracking-free `-notrack` build simply
+stops loading — Chrome disables it as "no longer supported" with no way to turn it
+back on.
+
+The upstream `-notrack` project was a text-only fork (its author states they are "not
+a developer" and did not intend to maintain it), so it was never migrated. **This fork
+exists to keep the tracking-free version alive by porting it to Manifest V3** — and
+nothing else: no analytics, no remote requests, no telemetry were added, in keeping
+with the whole point of the `-notrack` line.
+
+What the migration changed (functionally identical to the user; different plumbing):
+
+- Persistent background page → a **service worker** (`js/background-sw.js`).
+- Auto-suspend timers → `chrome.alarms` (service workers don't stay alive).
+- Settings moved from `localStorage` to `chrome.storage.local` (workers have no `localStorage`).
+- Suspended/option/history pages now talk to the worker over message passing instead of
+  reaching into the background page directly.
+- `browser_action` → `action`, `chrome.tabs.executeScript` → `chrome.scripting`,
+  `chrome://favicon` → the `_favicon` API, and other mechanical MV2→MV3 replacements.
+
+The migration was reviewed for correctness and security; the full record (including
+service-worker lifecycle gotchas and one XSS-class fix) lives in
+[`docs/ARCHITECTURE/manifest-v3-migration.md`](docs/ARCHITECTURE/manifest-v3-migration.md).
+**Requires Chrome 121+.** Same "best effort, no guarantees" spirit as the parent fork
+— it works and loads on modern Chrome again.
+
 <img src="/src/img/suspendy-guy.png" width="100px" />
 
 "The Great Suspender" is a free and open-source Google Chrome extension for people who find that chrome is consuming too much system resource or suffer from frequent chrome crashing. Once installed and enabled, this extension will automatically *suspend* tabs that have not been used for a while, freeing up memory and cpu that the tab was consuming.
