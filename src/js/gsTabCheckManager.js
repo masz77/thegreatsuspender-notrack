@@ -1,4 +1,4 @@
-/*global chrome, localStorage, tgs, gsStorage, gsSession, gsMessages, gsUtils, gsTabDiscardManager, gsChrome, GsTabQueue, gsSuspendedTab */
+/*global chrome, tgs, gsStorage, gsSession, gsMessages, gsUtils, gsTabDiscardManager, gsChrome, GsTabQueue */
 // eslint-disable-next-line no-unused-vars
 var gsTabCheckManager = (function() {
   'use strict';
@@ -202,6 +202,18 @@ var gsTabCheckManager = (function() {
     }
   }
 
+  // why: the worker can no longer read the suspended page's DOM; ask the page itself.
+  function getSuspendedTabInfo(tabId) {
+    return new Promise(resolve => {
+      gsMessages.sendMessageToTab(
+        tabId,
+        { action: 'requestSuspendedTabInfo' },
+        gsMessages.INFO,
+        (error, response) => resolve(error || !response ? null : response)
+      );
+    });
+  }
+
   async function checkSuspendedTab(
     tab,
     executionProps,
@@ -249,13 +261,13 @@ var gsTabCheckManager = (function() {
       }
     }
 
-    // Make sure tab is registered as a 'view' of the extension
-    const suspendedView = tgs.getInternalViewByTabId(tab.id);
-    if (!suspendedView) {
+    // Ask the suspended page for its current status (MV3 has no page 'views')
+    const suspendedTabInfo = await getSuspendedTabInfo(tab.id);
+    if (!suspendedTabInfo) {
       gsUtils.log(
         tab.id,
         QUEUE_ID,
-        'Could not find an internal view for suspended tab.',
+        'Could not get info from suspended tab.',
         tab
       );
       if (!executionProps.resuspended) {
@@ -293,10 +305,9 @@ var gsTabCheckManager = (function() {
       !gsUtils.isDiscardedTab(tab) &&
       !tgs.isCurrentActiveTab(tab);
     const tabSessionOk =
-      suspendedView.document.sessionId === gsSession.getSessionId();
+      suspendedTabInfo.sessionId === gsSession.getSessionId();
     const tabBasicsOk = ensureSuspendedTabTitleAndFaviconSet(tab);
-    const tabVisibleOk =
-      attemptDiscarding || ensureSuspendedTabVisible(suspendedView);
+    const tabVisibleOk = attemptDiscarding || !!suspendedTabInfo.isVisible;
     const tabChecksOk = tabSessionOk && tabBasicsOk && tabVisibleOk;
 
     let reinitialised = false;
@@ -310,7 +321,19 @@ var gsTabCheckManager = (function() {
         gsUtils.log(tab.id, QUEUE_ID, 'Reinitialising suspendedTab: ', tab);
         // If we know that we will discard tab, then just perform a quick init
         const quickInit = attemptDiscarding && !tab.active;
-        await gsSuspendedTab.initTab(tab, suspendedView, { quickInit });
+        const payload = await tgs.buildSuspendedInitPayload(tab, quickInit);
+        const initOk = await new Promise(resolveInit => {
+          gsMessages.sendMessageToTab(
+            tab.id,
+            { action: 'initSuspendedTab', payload },
+            gsMessages.INFO,
+            (error, response) => resolveInit(!error && !!response)
+          );
+        });
+        if (!initOk) {
+          requeue(DEFAULT_TAB_CHECK_REQUEUE_DELAY, { refetchTab: true });
+          return;
+        }
         reinitialised = true;
       } catch (e) {
         gsUtils.log(
@@ -340,27 +363,13 @@ var gsTabCheckManager = (function() {
 
   async function resuspendSuspendedTab(tab) {
     gsUtils.log(tab.id, QUEUE_ID, 'Resuspending unresponsive suspended tab.');
-    const suspendedView = tgs.getInternalViewByTabId(tab.id);
-    if (suspendedView) {
-      tgs.setTabStatePropForTabId(
-        tab.id,
-        tgs.STATE_DISABLE_UNSUSPEND_ON_RELOAD,
-        true
-      );
-    }
+    tgs.setTabStatePropForTabId(
+      tab.id,
+      tgs.STATE_DISABLE_UNSUSPEND_ON_RELOAD,
+      true
+    );
     const reloadOk = await gsChrome.tabsReload(tab.id);
     return reloadOk;
-  }
-
-  function ensureSuspendedTabVisible(tabView) {
-    if (!tabView) {
-      return false;
-    }
-    const bodyEl = tabView.document.getElementsByTagName('body')[0];
-    if (!bodyEl) {
-      return false;
-    }
-    return !bodyEl.classList.contains('hide-initially');
   }
 
   function ensureSuspendedTabTitleAndFaviconSet(tab) {
@@ -457,7 +466,7 @@ var gsTabCheckManager = (function() {
   }
 
   // Careful with this function. It seems that these unresponsive tabs can sometimes
-  // not return any result after chrome.tabs.executeScript
+  // not return any result after script injection
   // Try to mitigate this by wrapping in a setTimeout
   // TODO: Report chrome bug
   // Unrelated, but reinjecting content scripts has some issues:
@@ -477,7 +486,7 @@ var gsTabCheckManager = (function() {
         gsUtils.log(
           QUEUE_ID,
           tab.id,
-          'chrome.tabs.executeScript failed to trigger callback'
+          'script injection failed to trigger callback'
         );
         resolve(null);
       }, 10000);
@@ -511,6 +520,5 @@ var gsTabCheckManager = (function() {
     queueTabCheckAsPromise,
     unqueueTabCheck,
     getQueuedTabCheckDetails,
-    ensureSuspendedTabVisible,
   };
 })();

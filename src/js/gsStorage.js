@@ -4,6 +4,12 @@
 // Used to keep track of which settings were defined in the managed storage
 const managedOptions = []; // Example: ["gsTheme, gsWhitelist"]
 
+// why: MV3 service workers have no localStorage; settings live in chrome.storage.local
+// behind this synchronous in-memory cache so the ~65 sync getOption() call sites keep working.
+let _settingsCache = null;
+const _metaCache = {};
+let _initCachePromise = null;
+
 const gsStorageSettings = {
   SCREEN_CAPTURE: 'screenCapture',
   SCREEN_CAPTURE_FORCE: 'screenCaptureForce',
@@ -41,6 +47,16 @@ var gsStorage = {
   SM_SUSPENDED_TAB_COUNT: 'suspendedTabCount',
   SM_TOTAL_TAB_COUNT: 'totalTabCount',
 
+  // chrome.storage.local keys that back the synchronous cache
+  STORAGE_KEYS: [
+    'gsSettings',
+    'gsVersion',
+    'gsNotice',
+    'gsExtensionRecovery',
+    'gsSessionMetrics',
+    'gsSettingsMigrated',
+  ],
+
   noop: function() {},
 
   getSettingsDefaults: function() {
@@ -74,8 +90,107 @@ var gsStorage = {
    * LOCAL STORAGE FUNCTIONS
    */
 
-  //populate localstorage settings with sync settings where undefined
-  initSettingsAsPromised: function() {
+  // Loads the chrome.storage.local-backed cache. Idempotent; safe to await from any context.
+  initSettingsCacheAsPromised: function() {
+    if (_initCachePromise) {
+      return _initCachePromise;
+    }
+    _initCachePromise = new Promise(function(resolve) {
+      chrome.storage.local.get(gsStorage.STORAGE_KEYS, function(result) {
+        result = result || {};
+        const metaKeys = [
+          gsStorage.APP_VERSION,
+          gsStorage.LAST_NOTICE,
+          gsStorage.LAST_EXTENSION_RECOVERY,
+          gsStorage.SM_SESSION_METRICS,
+        ];
+
+        // why: only extension PAGES have localStorage; the worker cannot read the legacy
+        // MV2 settings, so pages migrate them once (guarded by the gsSettingsMigrated flag).
+        if (!result.gsSettingsMigrated && typeof localStorage !== 'undefined') {
+          const migrated = {};
+          try {
+            const legacySettings = JSON.parse(localStorage.getItem('gsSettings'));
+            if (legacySettings) {
+              // legacy settings WIN over any defaults the worker may have auto-created
+              result.gsSettings = legacySettings;
+            }
+          } catch (e) {
+            gsUtils.error('gsStorage', 'Failed to parse legacy gsSettings', e);
+          }
+          if (typeof result.gsSettings !== 'undefined') {
+            migrated.gsSettings = result.gsSettings;
+          }
+          for (const key of metaKeys) {
+            // why: worker may already have advanced gsVersion — only copy legacy meta if absent
+            if (typeof result[key] !== 'undefined') {
+              continue;
+            }
+            let legacyValue;
+            try {
+              legacyValue = JSON.parse(localStorage.getItem(key));
+            } catch (e) {
+              legacyValue = undefined;
+            }
+            if (typeof legacyValue !== 'undefined' && legacyValue !== null) {
+              result[key] = legacyValue;
+              migrated[key] = legacyValue;
+            }
+          }
+          migrated.gsSettingsMigrated = true;
+          chrome.storage.local.set(migrated, function() {
+            if (chrome.runtime.lastError) {
+              gsUtils.error(
+                'gsStorage',
+                'failed to persist migrated settings',
+                chrome.runtime.lastError
+              );
+            }
+          });
+        }
+
+        _settingsCache =
+          typeof result.gsSettings !== 'undefined' ? result.gsSettings : null;
+        for (const key of metaKeys) {
+          _metaCache[key] = result[key];
+        }
+
+        // why: options page writes must reach the worker cache and vice versa
+        chrome.storage.onChanged.addListener(function(changes, namespace) {
+          if (namespace !== 'local' || !changes) {
+            return;
+          }
+          if (changes.gsSettings) {
+            _settingsCache = changes.gsSettings.newValue;
+          }
+          for (const key of metaKeys) {
+            if (changes[key]) {
+              _metaCache[key] = changes[key].newValue;
+            }
+          }
+        });
+
+        // Populate managedOptions so isOptionManaged works in every context.
+        chrome.storage.managed.get(
+          Object.keys(gsStorageSettings),
+          function(managed) {
+            managed = managed || {};
+            Object.keys(managed).forEach(function(key) {
+              if (managedOptions.indexOf(gsStorage[key]) === -1) {
+                managedOptions.push(gsStorage[key]);
+              }
+            });
+            resolve();
+          }
+        );
+      });
+    });
+    return _initCachePromise;
+  },
+
+  //populate settings with sync settings where undefined
+  initSettingsAsPromised: async function() {
+    await gsStorage.initSettingsCacheAsPromised();
     return new Promise(function(resolve) {
       var defaultSettings = gsStorage.getSettingsDefaults();
       var defaultKeys = Object.keys(defaultSettings);
@@ -83,17 +198,8 @@ var gsStorage = {
         gsUtils.log('gsStorage', 'syncedSettings on init: ', syncedSettings);
         gsSession.setSynchedSettingsOnInit(syncedSettings);
 
-        var rawLocalSettings;
-        try {
-          rawLocalSettings = JSON.parse(localStorage.getItem('gsSettings'));
-        } catch (e) {
-          gsUtils.error(
-            'gsStorage',
-            'Failed to parse gsSettings: ',
-            localStorage.getItem('gsSettings')
-          );
-        }
-        if (!rawLocalSettings) {
+        var rawLocalSettings = _settingsCache || {};
+        if (!rawLocalSettings || Object.keys(rawLocalSettings).length === 0) {
           rawLocalSettings = {};
         } else {
           //if we have some rawLocalSettings but SYNC_SETTINGS is not defined
@@ -273,26 +379,17 @@ var gsStorage = {
     gsStorage.saveSettings(settings);
   },
 
-  // Important to note that setOption (and ultimately saveSettings) uses localStorage whereas
-  // syncSettings saves to chrome.storage.
+  // Important to note that setOption (and ultimately saveSettings) uses chrome.storage.local
+  // whereas syncSettings saves to chrome.storage.sync.
   // Calling syncSettings has the unfortunate side-effect of triggering the chrome.storage.onChanged
-  // listener which the re-saves the setting to localStorage a second time.
+  // listener which then re-saves the setting to local a second time.
   setOptionAndSync: function(prop, value) {
     gsStorage.setOption(prop, value);
     gsStorage.syncSettings();
   },
 
   getSettings: function() {
-    var settings;
-    try {
-      settings = JSON.parse(localStorage.getItem('gsSettings'));
-    } catch (e) {
-      gsUtils.error(
-        'gsStorage',
-        'Failed to parse gsSettings: ',
-        localStorage.getItem('gsSettings')
-      );
-    }
+    var settings = _settingsCache;
     if (!settings) {
       settings = gsStorage.getSettingsDefaults();
       gsStorage.saveSettings(settings);
@@ -301,15 +398,16 @@ var gsStorage = {
   },
 
   saveSettings: function(settings) {
-    try {
-      localStorage.setItem('gsSettings', JSON.stringify(settings));
-    } catch (e) {
-      gsUtils.error(
-        'gsStorage',
-        'failed to save gsSettings to local storage',
-        e
-      );
-    }
+    _settingsCache = settings;
+    chrome.storage.local.set({ gsSettings: settings }, function() {
+      if (chrome.runtime.lastError) {
+        gsUtils.error(
+          'gsStorage',
+          'failed to save gsSettings to chrome.storage.local',
+          chrome.runtime.lastError
+        );
+      }
+    });
   },
 
   // Push settings to sync
@@ -317,6 +415,8 @@ var gsStorage = {
     var settings = gsStorage.getSettings();
     if (settings[gsStorage.SYNC_SETTINGS]) {
       // Since sync is a local setting, delete it to simplify things.
+      // Copy so we don't mutate the cached settings object.
+      settings = Object.assign({}, settings);
       delete settings[gsStorage.SYNC_SETTINGS];
       gsUtils.log(
         'gsStorage',
@@ -336,120 +436,53 @@ var gsStorage = {
     }
   },
 
+  saveMeta: function(key, value) {
+    _metaCache[key] = value;
+    chrome.storage.local.set({ [key]: value }, function() {
+      if (chrome.runtime.lastError) {
+        gsUtils.error(
+          'gsStorage',
+          'failed to save ' + key + ' to chrome.storage.local',
+          chrome.runtime.lastError
+        );
+      }
+    });
+  },
+
   fetchLastVersion: function() {
-    var version;
-    try {
-      version = JSON.parse(localStorage.getItem(gsStorage.APP_VERSION));
-    } catch (e) {
-      gsUtils.error(
-        'gsStorage',
-        'Failed to parse ' + gsStorage.APP_VERSION + ': ',
-        localStorage.getItem(gsStorage.APP_VERSION)
-      );
-    }
+    var version = _metaCache[gsStorage.APP_VERSION];
     version = version || '0.0.0';
     return version + '';
   },
   setLastVersion: function(newVersion) {
-    try {
-      localStorage.setItem(gsStorage.APP_VERSION, JSON.stringify(newVersion));
-    } catch (e) {
-      gsUtils.error(
-        'gsStorage',
-        'failed to save ' + gsStorage.APP_VERSION + ' to local storage',
-        e
-      );
-    }
+    gsStorage.saveMeta(gsStorage.APP_VERSION, newVersion);
   },
 
   fetchNoticeVersion: function() {
-    var lastNoticeVersion;
-    try {
-      lastNoticeVersion = JSON.parse(
-        localStorage.getItem(gsStorage.LAST_NOTICE)
-      );
-    } catch (e) {
-      gsUtils.error(
-        'gsStorage',
-        'Failed to parse ' + gsStorage.LAST_NOTICE + ': ',
-        localStorage.getItem(gsStorage.LAST_NOTICE)
-      );
-    }
+    var lastNoticeVersion = _metaCache[gsStorage.LAST_NOTICE];
     lastNoticeVersion = lastNoticeVersion || '0';
     return lastNoticeVersion + '';
   },
   setNoticeVersion: function(newVersion) {
-    try {
-      localStorage.setItem(gsStorage.LAST_NOTICE, JSON.stringify(newVersion));
-    } catch (e) {
-      gsUtils.error(
-        'gsStorage',
-        'failed to save ' + gsStorage.LAST_NOTICE + ' to local storage',
-        e
-      );
-    }
+    gsStorage.saveMeta(gsStorage.LAST_NOTICE, newVersion);
   },
 
   fetchLastExtensionRecoveryTimestamp: function() {
-    var lastExtensionRecoveryTimestamp;
-    try {
-      lastExtensionRecoveryTimestamp = JSON.parse(
-        localStorage.getItem(gsStorage.LAST_EXTENSION_RECOVERY)
-      );
-    } catch (e) {
-      gsUtils.error(
-        'gsStorage',
-        'Failed to parse ' + gsStorage.LAST_EXTENSION_RECOVERY + ': ',
-        localStorage.getItem(gsStorage.LAST_EXTENSION_RECOVERY)
-      );
-    }
-    return lastExtensionRecoveryTimestamp;
+    return _metaCache[gsStorage.LAST_EXTENSION_RECOVERY];
   },
   setLastExtensionRecoveryTimestamp: function(extensionRecoveryTimestamp) {
-    try {
-      localStorage.setItem(
-        gsStorage.LAST_EXTENSION_RECOVERY,
-        JSON.stringify(extensionRecoveryTimestamp)
-      );
-    } catch (e) {
-      gsUtils.error(
-        'gsStorage',
-        'failed to save ' +
-          gsStorage.LAST_EXTENSION_RECOVERY +
-          ' to local storage',
-        e
-      );
-    }
+    gsStorage.saveMeta(
+      gsStorage.LAST_EXTENSION_RECOVERY,
+      extensionRecoveryTimestamp
+    );
   },
 
   fetchSessionMetrics: function() {
-    var sessionMetrics = {};
-    try {
-      sessionMetrics = JSON.parse(
-        localStorage.getItem(gsStorage.SM_SESSION_METRICS)
-      );
-    } catch (e) {
-      gsUtils.error(
-        'gsStorage',
-        'Failed to parse ' + gsStorage.SM_SESSION_METRICS + ': ',
-        localStorage.getItem(gsStorage.SM_SESSION_METRICS)
-      );
-    }
-    return sessionMetrics;
+    var sessionMetrics = _metaCache[gsStorage.SM_SESSION_METRICS];
+    return sessionMetrics || {};
   },
   setSessionMetrics: function(sessionMetrics) {
-    try {
-      localStorage.setItem(
-        gsStorage.SM_SESSION_METRICS,
-        JSON.stringify(sessionMetrics)
-      );
-    } catch (e) {
-      gsUtils.error(
-        'gsStorage',
-        'failed to save ' + gsStorage.SM_SESSION_METRICS + ' to local storage',
-        e
-      );
-    }
+    gsStorage.saveMeta(gsStorage.SM_SESSION_METRICS, sessionMetrics);
   },
 
   /**

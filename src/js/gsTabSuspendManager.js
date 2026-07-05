@@ -1,4 +1,4 @@
-/*global html2canvas, domtoimage, tgs, gsFavicon, gsMessages, gsStorage, gsUtils, gsChrome, gsIndexedDb, gsTabDiscardManager, gsTabCheckManager, GsTabQueue */
+/*global html2canvas, domtoimage, tgs, gsFavicon, gsMessages, gsStorage, gsUtils, gsChrome, gsIndexedDb, gsTabDiscardManager, gsTabCheckManager, gsCleanScreencaps, GsTabQueue */
 // eslint-disable-next-line no-unused-vars
 var gsTabSuspendManager = (function() {
   'use strict';
@@ -420,9 +420,10 @@ var gsTabSuspendManager = (function() {
         return;
       }
 
-      gsMessages.executeCodeOnTab(
+      gsMessages.executeFuncOnTab(
         tab.id,
-        `(${fetchYouTubeTimestampContentScript})();`,
+        fetchYouTubeTimestampContentScript,
+        [],
         (error, response) => {
           if (error) {
             gsUtils.warning(
@@ -432,12 +433,12 @@ var gsTabSuspendManager = (function() {
               error
             );
           }
-          if (!response) {
+          const timestamp = response && response[0];
+          if (!timestamp) {
             resolve(tab.url);
             return;
           }
 
-          const timestamp = response;
           const youTubeUrl = new URL(tab.url);
           youTubeUrl.searchParams.set('t', timestamp + 's');
           resolve(youTubeUrl.href);
@@ -517,15 +518,16 @@ var gsTabSuspendManager = (function() {
         handlePreviewImageResponse(tab, null, 'Failed to executeScriptOnTab'); //async. unhandled promise.
         return;
       }
-      gsMessages.executeCodeOnTab(
+      gsMessages.executeFuncOnTab(
         tab.id,
-        `(${generatePreviewImageCanvasViaContentScript})("${screenCaptureMode}", ${forceScreenCapture}, ${useAlternateScreenCaptureLib});`,
+        generatePreviewImageCanvasViaContentScript,
+        [screenCaptureMode, forceScreenCapture, useAlternateScreenCaptureLib],
         error => {
           if (error) {
             handlePreviewImageResponse(
               tab,
               null,
-              'Failed to executeCodeOnTab: generatePreviewImgContentScript'
+              'Failed to executeFuncOnTab: generatePreviewImgContentScript'
             ); //async. unhandled promise.
             return;
           }

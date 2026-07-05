@@ -1,4 +1,4 @@
-/*global chrome, localStorage, tgs, gsStorage, gsIndexedDb, gsUtils, gsChrome, gsTabCheckManager, gsTabDiscardManager */
+/*global chrome, gsStorage, gsIndexedDb, gsUtils, gsChrome, gsTabCheckManager, gsTabDiscardManager */
 // eslint-disable-next-line no-unused-vars
 var gsSession = (function() {
   'use strict';
@@ -7,7 +7,9 @@ var gsSession = (function() {
 
   let updatedUrl;
 
-  let initialisationMode = true;
+  // why: runStartupChecks (cold-start-only) is what clears this flag; defaulting
+  // true left every warm-woken worker reporting initialising forever.
+  let initialisationMode = false;
   let sessionId;
   let updateType = null;
   let updated = false;
@@ -20,7 +22,14 @@ var gsSession = (function() {
   let syncedSettingsOnInit;
 
   async function initAsPromised() {
-    updatedUrl = chrome.extension.getURL('updated.html');
+    updatedUrl = chrome.runtime.getURL('updated.html');
+
+    // why: storage.session clears on browser restart, so sessionId stays stable
+    // across worker re-wakes but still rotates per real browser session.
+    const stored = await new Promise(r =>
+      chrome.storage.session.get('gsSessionId', o => r(o.gsSessionId))
+    );
+    if (stored) sessionId = stored;
 
     // Set fileUrlsAccessAllowed to determine if extension can work on file:// URLs
     await new Promise(r => {
@@ -74,6 +83,7 @@ var gsSession = (function() {
     if (!sessionId) {
       //turn this into a string to make comparisons easier further down the track
       sessionId = Date.now() + '';
+      chrome.storage.session.set({ gsSessionId: sessionId }); // fire & forget
       gsUtils.log('gsSession', 'sessionId: ', sessionId);
     }
     return sessionId;
@@ -239,7 +249,7 @@ var gsSession = (function() {
         await recoverLostTabs();
       } else {
         //otherwise show the recovery page
-        const recoveryUrl = chrome.extension.getURL('recovery.html');
+        const recoveryUrl = chrome.runtime.getURL('recovery.html');
         await gsChrome.tabsCreate(recoveryUrl);
         //hax0r: wait for recovery tab to finish loading before returning
         //this is so we remain in 'recoveryMode' for a bit longer, preventing
@@ -262,7 +272,7 @@ var gsSession = (function() {
       Object.keys(syncedSettingsOnInit).length === 0
     ) {
       //show welcome message
-      const optionsUrl = chrome.extension.getURL('options.html?firstTime');
+      const optionsUrl = chrome.runtime.getURL('options.html?firstTime');
       const noNag = gsStorage.getOption(gsStorage.NO_NAG);
       if (!noNag) {
         await gsChrome.tabsCreate(optionsUrl);
@@ -316,17 +326,20 @@ var gsSession = (function() {
       await recoverLostTabs();
       updated = true;
 
-      //update updated views
-      const updatedViews = tgs.getInternalViewsByViewName('updated');
-      if (updatedViews.length > 0) {
-        for (const view of updatedViews) {
-          view.exports.toggleUpdated();
-        }
+      //update any open 'updated' pages
+      const allTabs = await gsChrome.tabsQuery();
+      const updatedTabs = allTabs.filter(
+        t => t.url && t.url.indexOf(updatedUrl) === 0
+      );
+      if (updatedTabs.length > 0) {
+        chrome.runtime.sendMessage({ action: 'toggleUpdated' }, () => {
+          void chrome.runtime.lastError;
+        });
       } else {
         await gsUtils.removeTabsByUrlAsPromised(updatedUrl);
         if (!noNag) {
           await gsChrome.tabsCreate({ url: updatedUrl });
-        }  
+        }
       }
     } else {
       updated = true;
@@ -695,7 +708,7 @@ var gsSession = (function() {
       sessionWindow
     );
 
-    const restoringUrl = chrome.extension.getURL('restoring-window.html');
+    const restoringUrl = chrome.runtime.getURL('restoring-window.html');
     // Create new window. Important: do not pass in all urls to chrome.windows.create
     // If you load too many windows (or tabs?) like this, then it seems to blow
     // out the GPU memory in the chrome task manager
@@ -749,10 +762,16 @@ var gsSession = (function() {
       active: false,
     });
 
-    // Update recovery view (if it exists)
-    for (const view of tgs.getInternalViewsByViewName('recovery')) {
-      view.exports.removeTabFromList(newTab);
-    }
+    // Notify any open recovery page to remove this tab from its list
+    chrome.runtime.sendMessage(
+      {
+        action: 'removeTabFromRecoveryList',
+        tab: { id: newTab.id, url: newTab.url, pendingUrl: newTab.pendingUrl },
+      },
+      () => {
+        void chrome.runtime.lastError;
+      }
+    );
   }
 
   async function updateSessionMetrics(reset) {

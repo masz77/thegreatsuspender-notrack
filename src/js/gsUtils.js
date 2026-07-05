@@ -1,4 +1,4 @@
-/*global chrome, localStorage, gsStorage, gsChrome, gsMessages, gsSession, gsTabSuspendManager, gsTabDiscardManager, gsSuspendedTab, gsFavicon, tgs */
+/*global chrome, gsStorage, gsChrome, gsMessages, gsSession, gsTabSuspendManager, gsTabDiscardManager, tgs */
 'use strict';
 
 var debugInfo = false;
@@ -23,6 +23,25 @@ var gsUtils = {
   STATUS_UNKNOWN: 'unknown',
 
   // eslint-disable-line no-unused-vars
+  // why: pages can no longer reach the background page object (MV3); they call an
+  // allowlisted set of tgs functions over runtime messaging instead.
+  sendTgsRpc: function(fn, ...args) {
+    return new Promise(resolve => {
+      chrome.runtime.sendMessage({ action: 'tgsRpc', fn, args }, response => {
+        if (chrome.runtime.lastError) {
+          resolve(undefined);
+          return;
+        }
+        if (response && response.error) {
+          gsUtils.warning('gsUtils', 'tgsRpc error', response.error);
+          resolve(undefined);
+          return;
+        }
+        resolve(response ? response.result : undefined);
+      });
+    });
+  },
+
   contains: function(array, value) {
     for (var i = 0; i < array.length; i++) {
       if (array[i] === value) return true;
@@ -212,7 +231,7 @@ var gsUtils = {
     } else if (looseMatching) {
       return url.indexOf('suspended.html') > 0;
     } else {
-      return url.indexOf(chrome.extension.getURL('suspended.html')) === 0;
+      return url.indexOf(chrome.runtime.getURL('suspended.html')) === 0;
     }
   },
 
@@ -403,6 +422,10 @@ var gsUtils = {
   },
 
   documentReadyAndLocalisedAsPromsied: async function(doc) {
+    // why: every page needs the settings cache before its first sync getOption
+    if (typeof gsStorage !== 'undefined') {
+      await gsStorage.initSettingsCacheAsPromised();
+    }
     await gsUtils.documentReadyAsPromsied(doc);
     gsUtils.localiseHtml(doc);
     if (doc.body && doc.body.hidden) {
@@ -423,7 +446,7 @@ var gsUtils = {
       'uri=' +
       url;
 
-    return chrome.extension.getURL('suspended.html' + args);
+    return chrome.runtime.getURL('suspended.html' + args);
   },
 
   getRootUrl: function(url, includePath, includeScheme) {
@@ -638,32 +661,21 @@ var gsUtils = {
           const updatePreviewMode = changedSettingKeys.includes(
             gsStorage.SCREEN_CAPTURE
           );
-          if (updateTheme || updatePreviewMode) {
-            const suspendedView = tgs.getInternalViewByTabId(tab.id);
-            if (suspendedView) {
-              if (updateTheme) {
-                const theme = gsStorage.getOption(gsStorage.THEME);
-                gsFavicon.getFaviconMetaData(tab).then(faviconMeta => {
-                  const isLowContrastFavicon = faviconMeta.isDark || false;
-                  gsSuspendedTab.updateTheme(
-                    suspendedView,
-                    tab,
-                    theme,
-                    isLowContrastFavicon
-                  );
-                });
-              }
-              if (updatePreviewMode) {
-                const previewMode = gsStorage.getOption(
-                  gsStorage.SCREEN_CAPTURE
-                );
-                gsSuspendedTab.updatePreviewMode(
-                  suspendedView,
-                  tab,
-                  previewMode
-                ); // async. unhandled promise.
-              }
-            }
+          if (updateTheme) {
+            // why: the suspended page re-reads settings itself and repaints; the worker
+            // can no longer touch the page's DOM directly.
+            gsMessages.sendMessageToTab(
+              tab.id,
+              { action: 'updateTheme' },
+              gsMessages.INFO
+            );
+          }
+          if (updatePreviewMode) {
+            gsMessages.sendMessageToTab(
+              tab.id,
+              { action: 'updatePreviewMode' },
+              gsMessages.INFO
+            );
           }
 
           //if discardAfterSuspend has changed then updated discarded tabs

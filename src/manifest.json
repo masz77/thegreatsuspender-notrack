@@ -1,28 +1,25 @@
 {
   "name": "__MSG_ext_extension_name__",
   "description": "__MSG_ext_extension_description__",
-  "version": "7.1.12",
+  "version": "7.2.0",
   "default_locale": "en",
   "permissions": [
     "tabs",
     "storage",
     "history",
     "unlimitedStorage",
-    "http://*/*",
-    "https://*/*",
-    "file://*/*",
-    "chrome://favicon/*",
     "contextMenus",
-    "cookies"
+    "cookies",
+    "scripting",
+    "alarms",
+    "favicon"
   ],
+  "host_permissions": ["http://*/*", "https://*/*", "file://*/*"],
   "storage": {
     "managed_schema": "managed-storage-schema.json"
   },
   "background": {
-    "scripts": ["js/gsUtils.js", "js/gsChrome.js", "js/gsStorage.js", "js/db.js", "js/gsIndexedDb.js",
-      "js/gsMessages.js", "js/gsSession.js", "js/gsTabQueue.js", "js/gsTabCheckManager.js", "js/gsFavicon.js", "js/gsCleanScreencaps.js",
-      "js/gsTabSuspendManager.js", "js/gsTabDiscardManager.js", "js/gsSuspendedTab.js", "js/background.js"],
-    "persistent": true
+    "service_worker": "js/background-sw.js"
   },
   "content_scripts": [
     {
@@ -30,7 +27,7 @@
       "js": ["js/contentscript.js"]
     }
   ],
-  "browser_action": {
+  "action": {
     "default_title": "__MSG_ext_default_title__",
     "default_icon": {
       "16": "img/ic_suspendy_16x16.png",
@@ -45,11 +42,18 @@
     "48": "img/ic_suspendy_48x48.png",
     "128": "img/ic_suspendy_128x128.png"
   },
-  "web_accessible_resources": ["suspended.html"],
-  "content_security_policy": "script-src 'self'; object-src 'self'; child-src 'self'; connect-src 'self'; img-src 'self' data: chrome:; style-src 'self'; default-src 'self'",
+  "web_accessible_resources": [
+    {
+      "resources": ["suspended.html"],
+      "matches": ["http://*/*", "https://*/*", "file://*/*"]
+    }
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'"
+  },
   "incognito": "split",
-  "manifest_version": 2,
-  "minimum_chrome_version": "55",
+  "manifest_version": 3,
+  "minimum_chrome_version": "121",
 
   "commands": {
     "1-suspend-tab": {

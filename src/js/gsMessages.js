@@ -1,4 +1,4 @@
-/*global gsUtils, gsStorage */
+/*global chrome, gsUtils, gsStorage */
 // eslint-disable-next-line no-unused-vars
 var gsMessages = {
   INFO: 'info',
@@ -130,26 +130,34 @@ var gsMessages = {
       if (callback) callback('tabId not specified');
       return;
     }
-    chrome.tabs.executeScript(tabId, { file: scriptPath }, function(response) {
-      if (chrome.runtime.lastError) {
-        if (callback) callback(chrome.runtime.lastError);
-      } else {
-        if (callback) callback(null, response);
+    chrome.scripting.executeScript(
+      { target: { tabId }, files: [scriptPath] },
+      function(results) {
+        if (chrome.runtime.lastError) {
+          if (callback) callback(chrome.runtime.lastError);
+        } else if (callback) {
+          callback(null, results);
+        }
       }
-    });
+    );
   },
 
-  executeCodeOnTab: function(tabId, codeString, callback) {
+  // why: MV3 removed the old tabs script-injection API incl. code strings; inject a
+  // serialisable function + args via chrome.scripting instead.
+  executeFuncOnTab: function(tabId, func, args, callback) {
     if (!tabId) {
       if (callback) callback('tabId not specified');
       return;
     }
-    chrome.tabs.executeScript(tabId, { code: codeString }, function(response) {
-      if (chrome.runtime.lastError) {
-        if (callback) callback(chrome.runtime.lastError);
-      } else {
-        if (callback) callback(null, response);
+    chrome.scripting.executeScript(
+      { target: { tabId }, func: func, args: args || [] },
+      function(results) {
+        if (chrome.runtime.lastError) {
+          if (callback) callback(chrome.runtime.lastError);
+        } else if (callback) {
+          callback(null, (results || []).map(r => r.result));
+        }
       }
-    });
+    );
   },
 };
