@@ -1,13 +1,6 @@
-/*global chrome, historyItems, gsMessages, gsSession, gsStorage, gsIndexedDb, gsChrome, gsUtils */
+/*global chrome, historyItems, gsMessages, gsStorage, gsIndexedDb, gsChrome, gsUtils */
 (function(global) {
   'use strict';
-
-  try {
-    chrome.extension.getBackgroundPage().tgs.setViewGlobals(global);
-  } catch (e) {
-    window.setTimeout(() => window.location.reload(), 1000);
-    return;
-  }
 
   var restoreAttempted = false;
   var tabsToRecover = [];
@@ -105,7 +98,7 @@
 
     manageEl.onclick = function(e) {
       e.preventDefault();
-      chrome.tabs.create({ url: chrome.extension.getURL('history.html') });
+      chrome.tabs.create({ url: chrome.runtime.getURL('history.html') });
     };
 
     if (previewsEl) {
@@ -125,13 +118,15 @@
       restoreEl.className += ' btnDisabled';
       restoreEl.removeEventListener('click', performRestore);
       showTabSpinners();
-      while (gsSession.isInitialising()) {
+      while (await gsUtils.sendTgsRpc('isInitialising')) {
         await gsUtils.setTimeout(200);
       }
-      await gsSession.recoverLostTabs();
+      await gsUtils.sendTgsRpc('recoverLostTabs');
     };
 
     restoreEl.addEventListener('click', performRestore);
+
+    historyItems.setCurrentSessionId(await gsUtils.sendTgsRpc('getSessionId'));
 
     const currentTabs = await gsChrome.tabsQuery();
     const tabsToRecover = await getRecoverableTabs(currentTabs);
@@ -168,7 +163,11 @@
     }
   });
 
-  global.exports = {
-    removeTabFromList,
-  };
+  // why: worker broadcasts this when a recovered tab reopens; only handle our own
+  // action and return nothing so other pages' tgsRpc replies pass through untouched.
+  chrome.runtime.onMessage.addListener(request => {
+    if (request.action === 'removeTabFromRecoveryList') {
+      removeTabFromList(request.tab);
+    }
+  });
 })(this);

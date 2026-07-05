@@ -1,21 +1,19 @@
-/*global chrome, gsSession, gsUtils, gsFavicon */
+/*global chrome, gsUtils, gsFavicon */
 // eslint-disable-next-line no-unused-vars
 var historyItems = (function(global) {
   'use strict';
 
-  if (
-    !chrome.extension.getBackgroundPage() ||
-    !chrome.extension.getBackgroundPage().tgs
-  ) {
-    return;
+  let _currentSessionId = null;
+
+  function setCurrentSessionId(id) {
+    _currentSessionId = id;
   }
-  chrome.extension.getBackgroundPage().tgs.setViewGlobals(global);
 
   function createSessionHtml(session, showLinks) {
     session.windows = session.windows || [];
 
     var sessionType =
-        session.sessionId === gsSession.getSessionId()
+        session.sessionId === _currentSessionId
           ? 'current'
           : session.name
             ? 'saved'
@@ -253,6 +251,7 @@ var historyItems = (function(global) {
   }
 
   return {
+    setCurrentSessionId: setCurrentSessionId,
     createSessionHtml: createSessionHtml,
     createWindowHtml: createWindowHtml,
     createTabHtml: createTabHtml,

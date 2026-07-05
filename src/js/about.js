@@ -1,13 +1,6 @@
 /* global chrome, XMLHttpRequest, gsStorage, gsUtils */
-(function(global) {
+(function() {
   'use strict';
-
-  try {
-    chrome.extension.getBackgroundPage().tgs.setViewGlobals(global);
-  } catch (e) {
-    window.setTimeout(() => window.location.reload(), 1000);
-    return;
-  }
 
   gsUtils.documentReadyAndLocalisedAsPromsied(document).then(function() {
     var versionEl = document.getElementById('aboutVersion');
@@ -24,4 +17,4 @@
     }
   });
 
-})(this);
+})();

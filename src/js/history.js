@@ -1,13 +1,8 @@
-/*global chrome, historyItems, historyUtils, gsSession, gsIndexedDb, gsUtils */
+/*global chrome, historyItems, historyUtils, gsIndexedDb, gsUtils */
 (function(global) {
   'use strict';
 
-  try {
-    chrome.extension.getBackgroundPage().tgs.setViewGlobals(global);
-  } catch (e) {
-    window.setTimeout(() => window.location.reload(), 1000);
-    return;
-  }
+  var currentSessionId = null;
 
   async function reloadTabs(sessionId, windowId, openTabsAsSuspended) {
     const session = await gsIndexedDb.fetchSessionBySessionId(sessionId);
@@ -28,7 +23,7 @@
 
     for (let sessionWindow of sessionWindows) {
       const suspendMode = openTabsAsSuspended ? 1 : 2;
-      await gsSession.restoreSessionWindow(sessionWindow, null, suspendMode);
+      await gsUtils.sendTgsRpc('restoreSessionWindow', sessionWindow, suspendMode);
     }
   }
 
@@ -170,7 +165,7 @@
   }
 
   function createWindowElement(session, window, index) {
-    var allowReload = session.sessionId !== gsSession.getSessionId();
+    var allowReload = session.sessionId !== currentSessionId;
     var windowEl = historyItems.createWindowHtml(window, index, allowReload);
 
     addClickListenerToElement(
@@ -189,7 +184,7 @@
   }
 
   async function createTabElement(session, window, tab) {
-    var allowDelete = session.sessionId !== gsSession.getSessionId();
+    var allowDelete = session.sessionId !== currentSessionId;
     var tabEl = await historyItems.createTabHtml(tab, allowDelete);
 
     addClickListenerToElement(
@@ -260,7 +255,9 @@
     }
   }
 
-  gsUtils.documentReadyAndLocalisedAsPromsied(document).then(function() {
+  gsUtils.documentReadyAndLocalisedAsPromsied(document).then(async function() {
+    currentSessionId = await gsUtils.sendTgsRpc('getSessionId');
+    historyItems.setCurrentSessionId(currentSessionId);
     render();
   });
 

@@ -1,16 +1,9 @@
-/*global chrome, tgs, gsStorage, gsUtils */
-(function(global) {
+/*global gsStorage, gsUtils */
+(function() {
   'use strict';
 
-  try {
-    chrome.extension.getBackgroundPage().tgs.setViewGlobals(global);
-  } catch (e) {
-    window.setTimeout(() => window.location.reload(), 1000);
-    return;
-  }
-
-  gsUtils.documentReadyAndLocalisedAsPromsied(document).then(function() {
-    var notice = tgs.requestNotice();
+  gsUtils.documentReadyAndLocalisedAsPromsied(document).then(async function() {
+    var notice = await gsUtils.sendTgsRpc('requestNotice');
     if (
       notice &&
       notice.hasOwnProperty('text') &&
@@ -23,6 +16,6 @@
     }
 
     //clear notice (to prevent it showing again)
-    tgs.clearNotice();
+    gsUtils.sendTgsRpc('clearNotice');
   });
-})(this);
+})();

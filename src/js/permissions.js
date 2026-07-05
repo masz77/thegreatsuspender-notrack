@@ -1,17 +1,13 @@
-/*global chrome, historyUtils, gsSession, gsChrome, gsUtils */
+/*global chrome, historyUtils, gsChrome, gsUtils */
 (function(global) {
   'use strict';
 
-  try {
-    chrome.extension.getBackgroundPage().tgs.setViewGlobals(global);
-  } catch (e) {
-    window.setTimeout(() => window.location.reload(), 1000);
-    return;
-  }
-
   gsUtils.documentReadyAndLocalisedAsPromsied(document).then(function() {
     document.getElementById('exportBackupBtn').onclick = async function(e) {
-      const currentSession = await gsSession.buildCurrentSession();
+      const currentSession = await gsUtils.sendTgsRpc('buildCurrentSession');
+      if (!currentSession) {
+        return;
+      }
       historyUtils.exportSession(currentSession, function() {
         document.getElementById('exportBackupBtn').style.display = 'none';
       });

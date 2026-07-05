@@ -1,19 +1,20 @@
-/*global tgs, gsFavicon, gsStorage, gsSession, gsUtils, gsIndexedDb */
+/*global chrome, gsUtils, gsStorage, gsIndexedDb, gsFavicon */
 // eslint-disable-next-line no-unused-vars
 var gsSuspendedTab = (function() {
   'use strict';
 
-  async function initTab(tab, tabView, { quickInit }) {
-    if (!tabView) {
-      gsUtils.warning(
-        tab.id,
-        'Could not get internalTabView for suspended tab'
-      );
-    }
-    const suspendedUrl = tab.url;
+  // why: MV3 killed getBackgroundPage — this now runs inside suspended.html itself,
+  // owning its own document/window instead of a remote handle to another page.
+  let _initialised = false;
+  let _sessionId = null;
+  let _currentTab = null;
+  // why: cached from init so updateTheme can recompute low-contrast without a refetch
+  let _faviconMeta = null;
 
-    // Set sessionId for subsequent checks
-    tabView.document.sessionId = gsSession.getSessionId();
+  async function init(payload) {
+    payload = payload || {};
+    _sessionId = payload.sessionId || null;
+    const suspendedUrl = window.location.href;
 
     // Set title
     let title = gsUtils.getSuspendedTitle(suspendedUrl);
@@ -21,172 +22,151 @@ var gsSuspendedTab = (function() {
       // Encode any raw html tags that might be used in the title
       title = gsUtils.htmlEncode(title);
     }
-    setTitle(tabView.document, title);
+    setTitle(title);
 
     // Set faviconMeta
-    const faviconMeta = await gsFavicon.getFaviconMetaData(tab);
-    setFaviconMeta(tabView.document, faviconMeta);
+    const fakeTab = { url: suspendedUrl, id: _currentTab && _currentTab.id };
+    _faviconMeta = await gsFavicon.getFaviconMetaData(fakeTab);
+    setFaviconMeta(_faviconMeta);
 
-    if (quickInit) {
+    if (payload.quickInit) {
+      _initialised = true;
       return;
     }
 
-    gsUtils.localiseHtml(tabView.document);
+    gsUtils.localiseHtml(document);
 
     const options = gsStorage.getSettings();
     const originalUrl = gsUtils.getOriginalUrl(suspendedUrl);
 
     // Add event listeners
-    setUnloadTabHandler(tabView.window, tab);
-    setUnsuspendTabHandlers(tabView.document, tab);
+    setUnloadTabHandler();
+    setUnsuspendTabHandlers();
 
     // Set imagePreview
     const previewMode = options[gsStorage.SCREEN_CAPTURE];
     const previewUri = await getPreviewUri(suspendedUrl);
-    await toggleImagePreviewVisibility(
-      tabView.document,
-      tab,
-      previewMode,
-      previewUri
-    );
+    await toggleImagePreviewVisibility(previewMode, previewUri);
 
     // Set theme
     const theme = options[gsStorage.THEME];
-    const isLowContrastFavicon = faviconMeta.isDark;
-    setTheme(tabView.document, theme, isLowContrastFavicon);
+    setTheme(theme, _faviconMeta.isDark);
 
     // Set command
-    const suspensionToggleHotkey = await tgs.getSuspensionToggleHotkey();
-    setCommand(tabView.document, suspensionToggleHotkey);
+    setCommand(payload.hotkey);
 
     // Set url
-    setUrl(tabView.document, originalUrl);
+    setUrl(originalUrl);
 
     // Set reason
-    const suspendReasonInt = tgs.getTabStatePropForTabId(
-      tab.id,
-      tgs.STATE_SUSPEND_REASON
-    );
     let suspendReason = null;
-    if (suspendReasonInt === 3) {
+    if (payload.suspendReasonInt === 3) {
       suspendReason = chrome.i18n.getMessage('js_suspended_low_memory');
     }
-    setReason(tabView.document, suspendReason);
+    setReason(suspendReason);
 
     // Show the view
-    showContents(tabView.document);
+    showContents();
 
     // Set scrollPosition (must come after showing page contents)
     const scrollPosition = gsUtils.getSuspendedScrollPosition(suspendedUrl);
-    setScrollPosition(tabView.document, scrollPosition, previewMode);
-    tgs.setTabStatePropForTabId(tab.id, tgs.STATE_SCROLL_POS, scrollPosition);
-    // const whitelisted = gsUtils.checkWhiteList(originalUrl);
+    setScrollPosition(scrollPosition, previewMode);
+
+    _initialised = true;
   }
 
-  function showNoConnectivityMessage(tabView) {
-    if (!tabView.document.getElementById('disconnectedNotice')) {
-      loadToastTemplate(tabView.document);
+  function showNoConnectivityMessage() {
+    if (!document.getElementById('disconnectedNotice')) {
+      loadToastTemplate();
     }
-    tabView.document.getElementById('disconnectedNotice').style.display =
-      'none';
+    document.getElementById('disconnectedNotice').style.display = 'none';
     setTimeout(function() {
-      tabView.document.getElementById('disconnectedNotice').style.display =
-        'block';
+      document.getElementById('disconnectedNotice').style.display = 'block';
     }, 50);
   }
 
-  function updateCommand(tabView, suspensionToggleHotkey) {
-    setCommand(tabView.document, suspensionToggleHotkey);
+  async function updatePreviewMode(previewMode) {
+    const suspendedUrl = window.location.href;
+    const previewUri = await getPreviewUri(suspendedUrl);
+    await toggleImagePreviewVisibility(previewMode, previewUri);
+
+    const scrollPosition = gsUtils.getSuspendedScrollPosition(suspendedUrl);
+    setScrollPosition(scrollPosition, previewMode);
   }
 
-  function updateTheme(tabView, tab, theme, isLowContrastFavicon) {
-    setTheme(tabView.document, theme, isLowContrastFavicon);
+  function showContents() {
+    document.querySelector('body').classList.remove('hide-initially');
   }
 
-  async function updatePreviewMode(tabView, tab, previewMode) {
-    const previewUri = await getPreviewUri(tab.url);
-    await toggleImagePreviewVisibility(
-      tabView.document,
-      tab,
-      previewMode,
-      previewUri
-    );
-
-    const scrollPosition = gsUtils.getSuspendedScrollPosition(tab.url);
-    setScrollPosition(tabView.document, scrollPosition, previewMode);
-  }
-
-  function showContents(_document) {
-    _document.querySelector('body').classList.remove('hide-initially');
-  }
-
-  function setScrollPosition(_document, scrollPosition, previewMode) {
+  function setScrollPosition(scrollPosition, previewMode) {
     const scrollPosAsInt = (scrollPosition && parseInt(scrollPosition)) || 0;
     const scrollImagePreview = previewMode === '2';
     if (scrollImagePreview && scrollPosAsInt > 15) {
       const offsetScrollPosition = scrollPosAsInt + 151;
-      _document.body.scrollTop = offsetScrollPosition;
-      _document.documentElement.scrollTop = offsetScrollPosition;
+      document.body.scrollTop = offsetScrollPosition;
+      document.documentElement.scrollTop = offsetScrollPosition;
     } else {
-      _document.body.scrollTop = 0;
-      _document.documentElement.scrollTop = 0;
+      document.body.scrollTop = 0;
+      document.documentElement.scrollTop = 0;
     }
   }
 
-  function setTitle(_document, title) {
-    _document.title = title;
-    _document.getElementById('gsTitle').innerHTML = title;
-    _document.getElementById('gsTopBarTitle').innerHTML = title;
+  function setTitle(title) {
+    document.title = title;
+    document.getElementById('gsTitle').innerHTML = title;
+    document.getElementById('gsTopBarTitle').innerHTML = title;
     // Prevent unsuspend by parent container
     // Using mousedown event otherwise click can still be triggered if
     // mouse is released outside of this element
-    _document.getElementById('gsTopBarTitle').onmousedown = function(e) {
+    document.getElementById('gsTopBarTitle').onmousedown = function(e) {
       e.stopPropagation();
     };
   }
 
-  function setUrl(_document, url) {
-    _document.getElementById('gsTopBarUrl').innerHTML = cleanUrl(url);
-    _document.getElementById('gsTopBarUrl').setAttribute('href', url);
-    _document.getElementById('gsTopBarUrl').onmousedown = function(e) {
+  function setUrl(url) {
+    // why: the url= hash param is decoded via decodeURIComponent and reaches this
+    // sink; textContent prevents HTML/content injection into the chrome-extension:// page.
+    document.getElementById('gsTopBarUrl').textContent = cleanUrl(url);
+    document.getElementById('gsTopBarUrl').setAttribute('href', url);
+    document.getElementById('gsTopBarUrl').onmousedown = function(e) {
       e.stopPropagation();
     };
   }
 
-  function setFaviconMeta(_document, faviconMeta) {
-    _document
+  function setFaviconMeta(faviconMeta) {
+    document
       .getElementById('gsTopBarImg')
       .setAttribute('src', faviconMeta.normalisedDataUrl);
-    _document
+    document
       .getElementById('gsFavicon')
       .setAttribute('href', faviconMeta.transparentDataUrl);
   }
 
-  function setTheme(_document, theme, isLowContrastFavicon) {
+  function setTheme(theme, isLowContrastFavicon) {
     if (theme === 'dark') {
-      _document.querySelector('body').classList.add('dark');
+      document.querySelector('body').classList.add('dark');
     } else {
-      _document.querySelector('body').classList.remove('dark');
+      document.querySelector('body').classList.remove('dark');
     }
 
     if (theme === 'dark' && isLowContrastFavicon) {
-      _document
+      document
         .getElementById('faviconWrap')
         .classList.add('faviconWrapLowContrast');
     } else {
-      _document
+      document
         .getElementById('faviconWrap')
         .classList.remove('faviconWrapLowContrast');
     }
   }
 
-  function setReason(_document, reason) {
-    let reasonMsgEl = _document.getElementById('reasonMsg');
+  function setReason(reason) {
+    let reasonMsgEl = document.getElementById('reasonMsg');
     if (!reasonMsgEl) {
-      reasonMsgEl = _document.createElement('div');
+      reasonMsgEl = document.createElement('div');
       reasonMsgEl.setAttribute('id', 'reasonMsg');
       reasonMsgEl.classList.add('reasonMsg');
-      const containerEl = _document.getElementById('suspendedMsg-instr');
+      const containerEl = document.getElementById('suspendedMsg-instr');
       containerEl.insertBefore(reasonMsgEl, containerEl.firstChild);
     }
     reasonMsgEl.innerHTML = reason;
@@ -208,21 +188,19 @@ var gsSuspendedTab = (function() {
     return previewUri;
   }
 
-  function buildImagePreview(_document, tab, previewUri) {
+  function buildImagePreview(previewUri) {
     return new Promise(resolve => {
-      const previewEl = _document.createElement('div');
-      const bodyEl = _document.getElementsByTagName('body')[0];
+      const previewEl = document.createElement('div');
+      const bodyEl = document.getElementsByTagName('body')[0];
       previewEl.setAttribute('id', 'gsPreviewContainer');
       previewEl.classList.add('gsPreviewContainer');
-      previewEl.innerHTML = _document.getElementById(
-        'previewTemplate'
-      ).innerHTML;
-      const unsuspendTabHandler = buildUnsuspendTabHandler(_document, tab);
+      previewEl.innerHTML = document.getElementById('previewTemplate').innerHTML;
+      const unsuspendTabHandler = buildUnsuspendTabHandler();
       previewEl.onclick = unsuspendTabHandler;
       gsUtils.localiseHtml(previewEl);
       bodyEl.appendChild(previewEl);
 
-      const previewImgEl = _document.getElementById('gsPreviewImg');
+      const previewImgEl = document.getElementById('gsPreviewImg');
       const onLoadedHandler = function() {
         previewImgEl.removeEventListener('load', onLoadedHandler);
         previewImgEl.removeEventListener('error', onLoadedHandler);
@@ -234,50 +212,40 @@ var gsSuspendedTab = (function() {
     });
   }
 
-  function addWatermarkHandler(_document) {
-    _document.querySelector('.watermark').onclick = () => {
-      chrome.tabs.create({ url: chrome.extension.getURL('about.html') });
+  function addWatermarkHandler() {
+    document.querySelector('.watermark').onclick = () => {
+      chrome.tabs.create({ url: chrome.runtime.getURL('about.html') });
     };
   }
 
-  async function toggleImagePreviewVisibility(
-    _document,
-    tab,
-    previewMode,
-    previewUri
-  ) {
+  async function toggleImagePreviewVisibility(previewMode, previewUri) {
     const builtImagePreview =
-      _document.getElementById('gsPreviewContainer') !== null;
-    if (
-      !builtImagePreview &&
-      previewUri &&
-      previewMode &&
-      previewMode !== '0'
-    ) {
-      await buildImagePreview(_document, tab, previewUri);
+      document.getElementById('gsPreviewContainer') !== null;
+    if (!builtImagePreview && previewUri && previewMode && previewMode !== '0') {
+      await buildImagePreview(previewUri);
     } else {
-      addWatermarkHandler(_document);
+      addWatermarkHandler();
     }
 
-    if (!_document.getElementById('gsPreviewContainer')) {
+    if (!document.getElementById('gsPreviewContainer')) {
       return;
     }
     const overflow = previewMode === '2' ? 'auto' : 'hidden';
-    _document.body.style['overflow'] = overflow;
+    document.body.style['overflow'] = overflow;
 
     if (previewMode === '0' || !previewUri) {
-      _document.getElementById('gsPreviewContainer').style.display = 'none';
-      _document.getElementById('suspendedMsg').style.display = 'flex';
-      _document.body.classList.remove('img-preview-mode');
+      document.getElementById('gsPreviewContainer').style.display = 'none';
+      document.getElementById('suspendedMsg').style.display = 'flex';
+      document.body.classList.remove('img-preview-mode');
     } else {
-      _document.getElementById('gsPreviewContainer').style.display = 'block';
-      _document.getElementById('suspendedMsg').style.display = 'none';
-      _document.body.classList.add('img-preview-mode');
+      document.getElementById('gsPreviewContainer').style.display = 'block';
+      document.getElementById('suspendedMsg').style.display = 'none';
+      document.body.classList.add('img-preview-mode');
     }
   }
 
-  function setCommand(_document, command) {
-    const hotkeyEl = _document.getElementById('hotkeyWrapper');
+  function setCommand(command) {
+    const hotkeyEl = document.getElementById('hotkeyWrapper');
     if (command) {
       hotkeyEl.innerHTML =
         '<span class="hotkeyCommand">(' + command + ')</span>';
@@ -289,65 +257,55 @@ var gsSuspendedTab = (function() {
     }
   }
 
-  function setUnloadTabHandler(_window, tab) {
+  function setUnloadTabHandler() {
     // beforeunload event will get fired if: the tab is refreshed, the url is changed,
     // the tab is closed, or the tab is frozen by chrome ??
-    // when this happens the STATE_UNLOADED_URL gets set with the suspended tab url
-    // if the tab is refreshed, then on reload the url will match and the tab will unsuspend
-    // if the url is changed then on reload the url will not match
-    // if the tab is closed, the reload will never occur
-    _window.addEventListener('beforeunload', function(e) {
-      gsUtils.log(tab.id, 'BeforeUnload triggered: ' + tab.url);
-      if (tgs.isCurrentFocusedTab(tab)) {
-        tgs.setTabStatePropForTabId(tab.id, tgs.STATE_UNLOADED_URL, tab.url);
-      } else {
-        gsUtils.log(
-          tab.id,
-          'Ignoring beforeUnload as tab is not currently focused.'
-        );
-      }
+    // the worker inspects sender.tab and records STATE_UNLOADED_URL if this is the
+    // currently focused tab, so a refresh unsuspends on reload.
+    window.addEventListener('beforeunload', function() {
+      gsUtils.sendTgsRpc('reportSuspendedTabUnloading');
     });
   }
 
-  function setUnsuspendTabHandlers(_document, tab) {
-    const unsuspendTabHandler = buildUnsuspendTabHandler(_document, tab);
-    _document.getElementById('gsTopBarUrl').onclick = unsuspendTabHandler;
-    _document.getElementById('gsTopBar').onmousedown = unsuspendTabHandler;
-    _document.getElementById('suspendedMsg').onclick = unsuspendTabHandler;
+  function setUnsuspendTabHandlers() {
+    const unsuspendTabHandler = buildUnsuspendTabHandler();
+    document.getElementById('gsTopBarUrl').onclick = unsuspendTabHandler;
+    document.getElementById('gsTopBar').onmousedown = unsuspendTabHandler;
+    document.getElementById('suspendedMsg').onclick = unsuspendTabHandler;
   }
 
-  function buildUnsuspendTabHandler(_document, tab) {
+  function buildUnsuspendTabHandler() {
     return function(e) {
       e.preventDefault();
       e.stopPropagation();
       if (e.target.id === 'setKeyboardShortcut') {
         chrome.tabs.create({ url: 'chrome://extensions/shortcuts' });
       } else if (e.which === 1) {
-        showUnsuspendAnimation(_document);
-        tgs.unsuspendTab(tab);
+        showUnsuspendAnimation();
+        gsUtils.sendTgsRpc('unsuspendSelf');
       }
     };
   }
 
-  function showUnsuspendAnimation(_document) {
-    if (_document.body.classList.contains('img-preview-mode')) {
-      _document.getElementById('refreshSpinner').classList.add('spinner');
+  function showUnsuspendAnimation() {
+    if (document.body.classList.contains('img-preview-mode')) {
+      document.getElementById('refreshSpinner').classList.add('spinner');
     } else {
-      _document.body.classList.add('waking');
-      _document.getElementById('snoozyImg').src = chrome.extension.getURL(
+      document.body.classList.add('waking');
+      document.getElementById('snoozyImg').src = chrome.runtime.getURL(
         'img/snoozy_tab_awake.svg'
       );
-      _document.getElementById('snoozySpinner').classList.add('spinner');
+      document.getElementById('snoozySpinner').classList.add('spinner');
     }
   }
 
-  function loadToastTemplate(_document) {
-    const toastEl = _document.createElement('div');
+  function loadToastTemplate() {
+    const toastEl = document.createElement('div');
     toastEl.setAttribute('id', 'disconnectedNotice');
     toastEl.classList.add('toast-wrapper');
-    toastEl.innerHTML = _document.getElementById('toastTemplate').innerHTML;
+    toastEl.innerHTML = document.getElementById('toastTemplate').innerHTML;
     gsUtils.localiseHtml(toastEl);
-    _document.getElementsByTagName('body')[0].appendChild(toastEl);
+    document.getElementsByTagName('body')[0].appendChild(toastEl);
   }
 
   function cleanUrl(urlStr) {
@@ -368,11 +326,67 @@ var gsSuspendedTab = (function() {
     return urlStr;
   }
 
+  // why: this page shares the runtime.onMessage bus with tgsRpc responses destined for
+  // OTHER pages. Answer ONLY our known actions and return false/undefined for the rest,
+  // or we would steal (and mis-answer) another page's RPC reply.
+  chrome.runtime.onMessage.addListener(function(request, sender, sendResponse) {
+    switch (request.action) {
+      case 'initSuspendedTab':
+        init(request.payload).then(() => sendResponse({ initialised: true }));
+        return true;
+      case 'requestSuspendedTabInfo':
+        sendResponse({
+          isInitialised: _initialised,
+          sessionId: _sessionId,
+          isVisible: !document.body.classList.contains('hide-initially'),
+        });
+        return false;
+      case 'updateCommand':
+        setCommand(request.hotkey);
+        sendResponse({});
+        return false;
+      case 'updateTheme':
+        setTheme(
+          gsStorage.getOption(gsStorage.THEME),
+          _faviconMeta ? _faviconMeta.isDark : false
+        );
+        sendResponse({});
+        return false;
+      case 'updatePreviewMode':
+        updatePreviewMode(gsStorage.getOption(gsStorage.SCREEN_CAPTURE)).then(
+          () => sendResponse({})
+        );
+        return true;
+      case 'showNoConnectivityMessage':
+        showNoConnectivityMessage();
+        sendResponse({});
+        return false;
+      case 'ping':
+        // why: recovery.js pings suspended tabs to detect responsiveness
+        sendResponse({ action: 'pong' });
+        return false;
+      default:
+        return false;
+    }
+  });
+
+  gsUtils
+    .documentReadyAndLocalisedAsPromsied(document)
+    .then(async () => {
+      _currentTab = await new Promise(r => chrome.tabs.getCurrent(r));
+      let payload = null;
+      for (let i = 0; i < 5 && !payload; i += 1) {
+        payload = await gsUtils.sendTgsRpc('getSuspendedTabInitData');
+        if (!payload) {
+          await gsUtils.setTimeout(500);
+        }
+      }
+      if (!_initialised) {
+        await init(payload || {});
+      }
+    });
+
   return {
-    initTab,
-    showNoConnectivityMessage,
-    updateCommand,
-    updateTheme,
-    updatePreviewMode,
+    init,
   };
 })();

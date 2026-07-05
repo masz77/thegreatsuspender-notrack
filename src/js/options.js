@@ -1,11 +1,6 @@
 /*global chrome, gsStorage, gsChrome, gsUtils */
-(function(global) {
-  try {
-    chrome.extension.getBackgroundPage().tgs.setViewGlobals(global);
-  } catch (e) {
-    window.setTimeout(() => window.location.reload(), 1000);
-    return;
-  }
+(function() {
+  'use strict';
 
   var elementPrefMap = {
     preview: gsStorage.SCREEN_CAPTURE,
@@ -170,16 +165,12 @@
             setSyncNoteVisibility(false);
           }
           break;
-        case gsStorage.ENABLE_CLEAN_SCREENCAPS:
-          if (getOptionValue(element)) {
-            chrome.runtime.sendMessage({ action: 'loadCleanScreencaptureBlocklist' })
-          }
-          break;
       }
 
       var [oldValue, newValue] = saveChange(element);
       if (oldValue !== newValue) {
-        gsUtils.performPostSaveUpdates(
+        gsUtils.sendTgsRpc(
+          'performPostSaveUpdates',
           [prefKey],
           { [prefKey]: oldValue },
           { [prefKey]: newValue }
@@ -270,9 +261,9 @@
       );
       window.alert(chrome.i18n.getMessage('js_options_incognito_warning'));
     }
-  });
 
-  global.exports = {
-    initSettings,
-  };
-})(this);
+    // why: MV3 options page can't be pushed fresh settings by the worker, so
+    // re-read the cache on refocus to reflect changes made elsewhere.
+    window.addEventListener('focus', initSettings);
+  });
+})();

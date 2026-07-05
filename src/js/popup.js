@@ -1,13 +1,11 @@
-/*global chrome, tgs, gsStorage, gsSession, gsUtils */
-(function(global) {
+/*global chrome, gsStorage, gsUtils */
+(function() {
   'use strict';
-
-  chrome.extension.getBackgroundPage().tgs.setViewGlobals(global);
 
   var globalActionElListener;
 
   var getTabStatus = function(retriesRemaining, callback) {
-    tgs.getActiveTabStatus(function(status) {
+    gsUtils.sendTgsRpc('getActiveTabStatus').then(async function(status) {
       if (
         status !== gsUtils.STATUS_UNKNOWN &&
         status !== gsUtils.STATUS_LOADING
@@ -17,7 +15,7 @@
         callback(status);
       } else {
         var timeout = 1000;
-        if (!gsSession.isInitialising()) {
+        if (!(await gsUtils.sendTgsRpc('isInitialising'))) {
           retriesRemaining--;
           timeout = 200;
         }
@@ -56,9 +54,9 @@
     gsUtils.documentReadyAndLocalisedAsPromsied(document),
     getTabStatusAsPromise(0, true),
     getSelectedTabsAsPromise(),
-  ]).then(function([domLoadedEvent, initialTabStatus, selectedTabs]) {
+  ]).then(async function([domLoadedEvent, initialTabStatus, selectedTabs]) {
     setSuspendSelectedVisibility(selectedTabs);
-    setStatus(initialTabStatus);
+    setStatus(initialTabStatus, await gsUtils.sendTgsRpc('isInitialising'));
     showPopupContents();
     addClickHandlers();
 
@@ -122,7 +120,7 @@
     }
   }
 
-  function setStatus(status) {
+  function setStatus(status, initialising) {
     setSuspendCurrentVisibility(status);
 
     var statusDetail = '';
@@ -193,7 +191,7 @@
       status === gsUtils.STATUS_LOADING ||
       status === gsUtils.STATUS_UNKNOWN
     ) {
-      if (gsSession.isInitialising()) {
+      if (initialising) {
         statusDetail = chrome.i18n.getMessage('js_popup_initialising');
       } else {
         statusDetail = chrome.i18n.getMessage('js_popup_unknown');
@@ -227,18 +225,29 @@
         status === gsUtils.STATUS_NORMAL ||
         status === gsUtils.STATUS_ACTIVE
       ) {
-        tgsHanderFunc = tgs.requestToggleTempWhitelistStateOfHighlightedTab;
+        tgsHanderFunc = cb =>
+          gsUtils
+            .sendTgsRpc('requestToggleTempWhitelistStateOfHighlightedTab')
+            .then(cb);
       } else if (status === gsUtils.STATUS_SUSPENDED) {
-        tgsHanderFunc = tgs.requestToggleTempWhitelistStateOfHighlightedTab;
+        tgsHanderFunc = cb =>
+          gsUtils
+            .sendTgsRpc('requestToggleTempWhitelistStateOfHighlightedTab')
+            .then(cb);
       } else if (status === gsUtils.STATUS_WHITELISTED) {
-        tgsHanderFunc = tgs.unwhitelistHighlightedTab;
+        tgsHanderFunc = cb =>
+          gsUtils.sendTgsRpc('unwhitelistHighlightedTab').then(cb);
       } else if (
         status === gsUtils.STATUS_FORMINPUT ||
         status === gsUtils.STATUS_TEMPWHITELIST
       ) {
-        tgsHanderFunc = tgs.requestToggleTempWhitelistStateOfHighlightedTab;
+        tgsHanderFunc = cb =>
+          gsUtils
+            .sendTgsRpc('requestToggleTempWhitelistStateOfHighlightedTab')
+            .then(cb);
       } else if (status === gsUtils.STATUS_BLOCKED_FILE) {
-        tgsHanderFunc = tgs.promptForFilePermissions;
+        tgsHanderFunc = cb =>
+          gsUtils.sendTgsRpc('promptForFilePermissions').then(cb);
       }
 
       if (globalActionElListener) {
@@ -270,50 +279,50 @@
     document
       .getElementById('unsuspendOne')
       .addEventListener('click', function(e) {
-        tgs.unsuspendHighlightedTab();
+        gsUtils.sendTgsRpc('unsuspendHighlightedTab');
         window.close();
       });
     document
       .getElementById('suspendOne')
       .addEventListener('click', function(e) {
-        tgs.suspendHighlightedTab();
+        gsUtils.sendTgsRpc('suspendHighlightedTab');
         window.close();
       });
     document
       .getElementById('suspendAll')
       .addEventListener('click', function(e) {
-        tgs.suspendAllTabs(false);
+        gsUtils.sendTgsRpc('suspendAllTabs', false);
         window.close();
       });
     document
       .getElementById('unsuspendAll')
       .addEventListener('click', function(e) {
-        tgs.unsuspendAllTabs();
+        gsUtils.sendTgsRpc('unsuspendAllTabs');
         window.close();
       });
     document
       .getElementById('suspendSelected')
       .addEventListener('click', function(e) {
-        tgs.suspendSelectedTabs();
+        gsUtils.sendTgsRpc('suspendSelectedTabs');
         window.close();
       });
     document
       .getElementById('unsuspendSelected')
       .addEventListener('click', function(e) {
-        tgs.unsuspendSelectedTabs();
+        gsUtils.sendTgsRpc('unsuspendSelectedTabs');
         window.close();
       });
     document
       .getElementById('whitelistDomain')
       .addEventListener('click', function(e) {
-        tgs.whitelistHighlightedTab(false);
+        gsUtils.sendTgsRpc('whitelistHighlightedTab', false);
         setStatus(gsUtils.STATUS_WHITELISTED);
         // window.close();
       });
     document
       .getElementById('whitelistPage')
       .addEventListener('click', function(e) {
-        tgs.whitelistHighlightedTab(true);
+        gsUtils.sendTgsRpc('whitelistHighlightedTab', true);
         setStatus(gsUtils.STATUS_WHITELISTED);
         // window.close();
       });
@@ -321,9 +330,9 @@
       .getElementById('settingsLink')
       .addEventListener('click', function(e) {
         chrome.tabs.create({
-          url: chrome.extension.getURL('options.html'),
+          url: chrome.runtime.getURL('options.html'),
         });
         window.close();
       });
   }
-})(this);
+})();

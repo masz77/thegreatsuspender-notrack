@@ -1,13 +1,6 @@
 /*global chrome, gsUtils */
-(function(global) {
+(function() {
   'use strict';
-
-  try {
-    chrome.extension.getBackgroundPage().tgs.setViewGlobals(global);
-  } catch (e) {
-    window.setTimeout(() => window.location.reload(), 1000);
-    return;
-  }
 
   gsUtils.documentReadyAndLocalisedAsPromsied(document).then(function() {
     var shortcutsEl = document.getElementById('keyboardShortcuts');
@@ -23,7 +16,10 @@
     //populate keyboard shortcuts
     chrome.commands.getAll(commands => {
       commands.forEach(command => {
-        if (command.name !== '_execute_browser_action') {
+        if (
+          command.name !== '_execute_browser_action' &&
+          command.name !== '_execute_action'
+        ) {
           const shortcut =
             command.shortcut !== ''
               ? gsUtils.formatHotkeyString(command.shortcut)
@@ -45,4 +41,4 @@
     };
   });
 
-})(this);
+})();

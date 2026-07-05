@@ -1,13 +1,6 @@
-/*global chrome, tgs, gsUtils, gsFavicon, gsStorage, gsChrome */
-(function(global) {
+/*global chrome, gsUtils, gsFavicon, gsStorage, gsChrome */
+(function() {
   'use strict';
-
-  try {
-    chrome.extension.getBackgroundPage().tgs.setViewGlobals(global);
-  } catch (e) {
-    window.setTimeout(() => window.location.reload(), 1000);
-    return;
-  }
 
   var currentTabs = {};
 
@@ -51,7 +44,8 @@
       currentTabs[tabs[i].id] = tabs[i];
       debugInfoPromises.push(
         new Promise(r =>
-          tgs.getDebugInfo(curTab.id, o => {
+          gsUtils.sendTgsRpc('getDebugInfo', curTab.id).then(o => {
+            o = o || {};
             o.tab = curTab;
             r(o);
           })
@@ -144,4 +138,4 @@
         });
         */
   });
-})(this);
+})();
