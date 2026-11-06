@@ -1,6 +1,6 @@
 # The Great Suspender - Without Analytics Tracking
 
-**PLEASE NOTE: If you are switching to this extension from a different version of TheGreatSuspender, first export your tabs from the plugin settings window then, after updating, re-import your suspended tabs. Alternatively unsuspend (or bookmark) your existing suspended tabs before upgrading - you can find "unsuspend all tabs" by clicking on the extension icon in the top right corner of Chrome**
+**PLEASE NOTE: If you are switching to this extension from a different version of TheGreatSuspender, first export your tabs from the plugin settings window then, after updating, re-import your suspended tabs. Alternatively unsuspend (or bookmark) your existing suspended tabs before upgrading - you can find "unsuspend all tabs" by clicking on the extension icon in the top right corner of Chrome. This fork also converts old suspended tabs to their real URLs automatically, so the export step is only a safety backup.**
 
 **Import/Export Instructions: https://i.imgur.com/jgr0qEd.png**
 
@@ -52,6 +52,14 @@ service-worker lifecycle gotchas and one XSS-class fix) lives in
 [`docs/ARCHITECTURE/manifest-v3-migration.md`](docs/ARCHITECTURE/manifest-v3-migration.md).
 **Requires Chrome 121+.** Same "best effort, no guarantees" spirit as the parent fork
 — it works and loads on modern Chrome again.
+
+### Native tab discarding (no more lost tabs)
+
+- **Before:** a suspended tab was replaced by the extension's own page (`chrome-extension://…/suspended.html`). If the extension was disabled, removed or broke, Chrome closed or blocked those tabs and they were lost.
+- **Now:** suspending uses Chrome's built-in tab discarding (`chrome.tabs.discard`), the same mechanism as Chrome's Memory Saver. The tab keeps its real URL, title and history. Clicking it reloads the page; Chrome does that, not the extension.
+- **Why it matters:** tabs stay safe if the extension is disabled or uninstalled. Tested: after uninstall in Chromium 150, all discarded tabs remained.
+- **Upgrade:** on startup, tabs still on the old suspended page move back to their real URL. Inactive ones are discarded again.
+- **Trade-off:** no screenshot placeholder page any more. The theme and screen-capture options were removed.
 
 <img src="/src/img/suspendy-guy.png" width="100px" />
 
