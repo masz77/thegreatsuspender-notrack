@@ -439,14 +439,16 @@ var tgs = (function() {
         return;
       }
       chrome.windows.get(activeTab.windowId, { populate: true }, curWindow => {
+        const tabsToUnsuspend = [];
         for (const tab of curWindow.tabs) {
           gsTabSuspendManager.unqueueTabForSuspension(tab);
-          if (gsUtils.isSuspendedTab(tab)) {
-            unsuspendTab(tab);
+          if (isUnsuspendable(tab)) {
+            tabsToUnsuspend.push(tab);
           } else if (gsUtils.isNormalTab(tab) && !tab.active) {
             resetAutoSuspendTimerForTab(tab);
           }
         }
+        unsuspendTabsInBatches(tabsToUnsuspend);
       });
     });
   }
@@ -457,21 +459,20 @@ var tgs = (function() {
         // Because of the way that unsuspending steals window focus, we defer the suspending of tabs in the
         // current window until last
         var deferredTabs = [];
+        var tabsToUnsuspend = [];
         for (const tab of tabs) {
           gsTabSuspendManager.unqueueTabForSuspension(tab);
-          if (gsUtils.isSuspendedTab(tab)) {
+          if (isUnsuspendable(tab)) {
             if (tab.windowId === currentWindow.id) {
               deferredTabs.push(tab);
             } else {
-              unsuspendTab(tab);
+              tabsToUnsuspend.push(tab);
             }
           } else if (gsUtils.isNormalTab(tab)) {
             resetAutoSuspendTimerForTab(tab);
           }
         }
-        for (const tab of deferredTabs) {
-          unsuspendTab(tab);
-        }
+        unsuspendTabsInBatches(tabsToUnsuspend.concat(deferredTabs));
       });
     });
   }
@@ -491,12 +492,14 @@ var tgs = (function() {
     chrome.tabs.query(
       { highlighted: true, lastFocusedWindow: true },
       selectedTabs => {
+        const tabsToUnsuspend = [];
         for (const tab of selectedTabs) {
           gsTabSuspendManager.unqueueTabForSuspension(tab);
-          if (gsUtils.isSuspendedTab(tab)) {
-            unsuspendTab(tab);
+          if (isUnsuspendable(tab)) {
+            tabsToUnsuspend.push(tab);
           }
         }
+        unsuspendTabsInBatches(tabsToUnsuspend);
       }
     );
   }
@@ -596,8 +599,21 @@ var tgs = (function() {
     }
   }
 
+  // Suspended tabs and natively discarded tabs both need unsuspending.
+  function isUnsuspendable(tab) {
+    return gsUtils.isSuspendedTab(tab) || gsUtils.isDiscardedTab(tab);
+  }
+
+  // Returns true when a reload or navigation was started.
   function unsuspendTab(tab) {
-    if (!gsUtils.isSuspendedTab(tab)) return;
+    if (!gsUtils.isSuspendedTab(tab)) {
+      if (gsUtils.isDiscardedTab(tab)) {
+        gsUtils.log(tab.id, 'Reloading discarded tab');
+        gsChrome.tabsReload(tab.id);
+        return true;
+      }
+      return false;
+    }
 
     const scrollPosition = gsUtils.getSuspendedScrollPosition(tab.url);
     tgs.setTabStatePropForTabId(tab.id, tgs.STATE_SCROLL_POS, scrollPosition);
@@ -616,10 +632,48 @@ var tgs = (function() {
       // has reloaded via the STATE_SET_AUTODISCARDABLE flag.
       gsUtils.log(tab.id, 'Unsuspending tab via chrome.tabs.update');
       chrome.tabs.update(tab.id, { url: originalUrl, autoDiscardable: false });
-      return;
+      return true;
     }
 
     gsUtils.log(tab.id, 'Failed to execute unsuspend tab.');
+    return false;
+  }
+
+  // shortcut: batch limit applies per call, two rapid calls can run 10 reloads, upgrade to a shared queue if seen
+  const UNSUSPEND_BATCH_SIZE = 5;
+  // why: a reload that never reaches 'complete' must not stall the batch queue forever.
+  const UNSUSPEND_BATCH_TIMEOUT = 15 * 1000;
+
+  // Resolves on the tab's 'complete' status, removal, or timeout.
+  function waitForTabLoad(tabId) {
+    return new Promise(resolve => {
+      const done = () => {
+        clearTimeout(timer);
+        chrome.tabs.onUpdated.removeListener(onUpdated);
+        chrome.tabs.onRemoved.removeListener(onRemoved);
+        resolve();
+      };
+      const onUpdated = (id, changeInfo) => {
+        if (id === tabId && changeInfo.status === 'complete') done();
+      };
+      const onRemoved = id => {
+        if (id === tabId) done();
+      };
+      const timer = setTimeout(done, UNSUSPEND_BATCH_TIMEOUT);
+      chrome.tabs.onUpdated.addListener(onUpdated);
+      chrome.tabs.onRemoved.addListener(onRemoved);
+    });
+  }
+
+  // Unsuspends tabs in batches. Each batch waits for its tabs to load before the next starts.
+  async function unsuspendTabsInBatches(tabs) {
+    for (let i = 0; i < tabs.length; i += UNSUSPEND_BATCH_SIZE) {
+      const batch = tabs.slice(i, i + UNSUSPEND_BATCH_SIZE);
+      // Attach load listeners before unsuspending, so fast 'complete' events are not missed.
+      const loads = batch.map(tab => waitForTabLoad(tab.id));
+      batch.forEach(unsuspendTab);
+      await Promise.all(loads);
+    }
   }
 
   function buildSuspensionToggleHotkey() {

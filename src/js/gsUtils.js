@@ -235,16 +235,6 @@ var gsUtils = {
     }
   },
 
-  shouldSuspendDiscardedTabs: function() {
-    var suspendInPlaceOfDiscard = gsStorage.getOption(
-      gsStorage.SUSPEND_IN_PLACE_OF_DISCARD
-    );
-    var discardInPlaceOfSuspend = gsStorage.getOption(
-      gsStorage.DISCARD_IN_PLACE_OF_SUSPEND
-    );
-    return suspendInPlaceOfDiscard && !discardInPlaceOfSuspend;
-  },
-
   removeTabsByUrlAsPromised: function(url) {
     return new Promise(async resolve => {
       const tabs = await gsChrome.tabsQuery({ url });
@@ -286,6 +276,28 @@ var gsUtils = {
       }
       resolve(window);
     });
+  },
+
+  // Resolves true once the tab has committed a real page, false on timeout or if the tab closed.
+  // why: exact url matching timed out on redirects (http->https, login), so any committed non-suspended url counts.
+  // shortcut: polls tabs.get every 200ms instead of tabs.onUpdated, fine for a few tabs; upgrade if startup is slow with many tabs
+  waitForTabNavigationCommitted: async function(tabId, maxWaitTimeInMs) {
+    const retryUntil = Date.now() + (maxWaitTimeInMs || 10000);
+    while (Date.now() < retryUntil) {
+      const tab = await gsChrome.tabsGet(tabId);
+      if (!tab) {
+        return false;
+      }
+      if (
+        tab.url &&
+        tab.url !== 'about:blank' &&
+        !gsUtils.isSuspendedTab(tab)
+      ) {
+        return true;
+      }
+      await gsUtils.setTimeout(200);
+    }
+    return false;
   },
 
   checkWhiteList: function(url) {

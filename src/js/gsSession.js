@@ -1,4 +1,4 @@
-/*global chrome, gsStorage, gsIndexedDb, gsUtils, gsChrome, gsTabCheckManager, gsTabDiscardManager */
+/*global chrome, gsStorage, gsIndexedDb, gsUtils, gsChrome, gsTabCheckManager, gsTabDiscardManager, gsTabSuspendManager */
 // eslint-disable-next-line no-unused-vars
 var gsSession = (function() {
   'use strict';
@@ -181,6 +181,7 @@ var gsSession = (function() {
       await handleUpdate(currentSessionTabs, curVersion, startupLastVersion);
     }
 
+    await migrateSuspendedTabsToOriginalUrls();
     await performTabChecks();
 
     // Ensure currently focused tab is initialised correctly if suspended
@@ -196,6 +197,44 @@ var gsSession = (function() {
     updateCurrentSession(); //async
 
     initialisationMode = false;
+  }
+
+  // Moves legacy suspended.html tabs back to their real url. Inactive, eligible tabs are discarded after load.
+  async function migrateSuspendedTabsToOriginalUrls() {
+    const tabs = await gsChrome.tabsQuery();
+    await Promise.all(
+      tabs
+        .filter(tab => gsUtils.isSuspendedTab(tab))
+        .map(tab => migrateSuspendedTab(tab))
+    );
+  }
+
+  async function migrateSuspendedTab(tab) {
+    try {
+      const originalUrl = gsUtils.getOriginalUrl(tab.url);
+      await gsChrome.tabsUpdate(tab.id, { url: originalUrl });
+      // Copy with the real url so the whitelist check sees it, not the suspended url
+      const target = Object.assign({}, tab, { url: originalUrl });
+      const shouldDiscard =
+        !tab.active &&
+        gsTabSuspendManager.checkTabEligibilityForSuspension(target, 2);
+      if (shouldDiscard) {
+        discardOnceNavigationCommitted(tab); //async. not awaited so startup is not held up
+      }
+    } catch (error) {
+      gsUtils.warning(tab.id, 'gsSession', 'Failed to migrate suspended tab', error);
+    }
+  }
+
+  // Discards the tab only after it has left its starting page. Discarding earlier can keep the old url.
+  async function discardOnceNavigationCommitted(tab) {
+    try {
+      if (await gsUtils.waitForTabNavigationCommitted(tab.id)) {
+        gsTabDiscardManager.queueTabForDiscard(tab);
+      }
+    } catch (error) {
+      gsUtils.warning(tab.id, 'gsSession', 'Failed to discard tab', error);
+    }
   }
 
   //make sure the contentscript / suspended script of each tab is responsive
@@ -676,10 +715,14 @@ var gsSession = (function() {
       }
 
       for (const [i, sessionTab] of sessionWindow.tabs.entries()) {
+        // suspended session tabs are open at their real url now
+        const sessionUrl = gsUtils.isSuspendedTab(sessionTab)
+          ? gsUtils.getOriginalUrl(sessionTab.url)
+          : sessionTab.url;
         //if current tab does not exist then recreate it
         if (
           !gsUtils.isSpecialTab(sessionTab) &&
-          !currentTabUrls.includes(sessionTab.url) &&
+          !currentTabUrls.includes(sessionUrl) &&
           !currentTabIds.includes(sessionTab.id)
         ) {
           tabPromises.push(
@@ -748,12 +791,16 @@ var gsSession = (function() {
     index,
     suspendMode
   ) {
-    let url = sessionTab.url;
-    if (suspendMode === 1 && gsUtils.isNormalTab(sessionTab)) {
-      url = gsUtils.generateSuspendedUrl(sessionTab.url, sessionTab.title);
-    } else if (suspendMode === 2 && gsUtils.isSuspendedTab(sessionTab)) {
-      url = gsUtils.getOriginalUrl(sessionTab.url);
-    }
+    // Always open the real url. Suspended tabs are discarded after load instead of using suspended.html.
+    const wasSuspended = gsUtils.isSuspendedTab(sessionTab);
+    const url = wasSuspended
+      ? gsUtils.getOriginalUrl(sessionTab.url)
+      : sessionTab.url;
+    // suspendMode 0 keeps suspended tabs suspended; 1 suspends all normal tabs; 2 suspends none
+    const shouldSuspend =
+      suspendMode === 1
+        ? !gsUtils.isSpecialTab(sessionTab)
+        : suspendMode === 0 && wasSuspended;
     const newTab = await gsChrome.tabsCreate({
       windowId: windowId,
       url: url,
@@ -761,6 +808,9 @@ var gsSession = (function() {
       pinned: sessionTab.pinned,
       active: false,
     });
+    if (shouldSuspend && newTab) {
+      discardOnceNavigationCommitted(newTab); //async. unhandled promise.
+    }
 
     // Notify any open recovery page to remove this tab from its list
     chrome.runtime.sendMessage(

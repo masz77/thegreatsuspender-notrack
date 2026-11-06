@@ -3,7 +3,8 @@
 var gsTabSuspendManager = (function() {
   'use strict';
 
-  const DEFAULT_CONCURRENT_SUSPENSIONS = 3;
+  // why: 5 matches the discard queue, so suspend-all runs in batches of at most 5.
+  const CONCURRENT_SUSPENSIONS = 5;
   const DEFAULT_SUSPENSION_TIMEOUT = 60 * 1000;
 
   const QUEUE_ID = 'suspendQueue';
@@ -12,18 +13,14 @@ var gsTabSuspendManager = (function() {
 
   function initAsPromised() {
     return new Promise(async function(resolve) {
-      const screenCaptureMode = gsStorage.getOption(gsStorage.SCREEN_CAPTURE);
       const forceScreenCapture = gsStorage.getOption(
         gsStorage.SCREEN_CAPTURE_FORCE
       );
-      //TODO: This should probably update when the screencapture mode changes
-      const concurrentSuspensions =
-        screenCaptureMode === '0' ? 5 : DEFAULT_CONCURRENT_SUSPENSIONS;
       const suspensionTimeout = forceScreenCapture
         ? 5 * 60 * 1000
         : DEFAULT_SUSPENSION_TIMEOUT;
       const queueProps = {
-        concurrentExecutors: concurrentSuspensions,
+        concurrentExecutors: CONCURRENT_SUSPENSIONS,
         jobTimeout: suspensionTimeout,
         executorFn: performSuspension,
         exceptionFn: handleSuspensionException,
@@ -125,7 +122,11 @@ var gsTabSuspendManager = (function() {
           QUEUE_ID,
           'Interrupting tab loading to resuspend tab'
         );
-        const success = await executeTabSuspension(tab, suspendedUrl);
+        const success = await executeTabSuspension(
+          tab,
+          suspendedUrl,
+          executionProps.forceLevel
+        );
         resolve(success);
       } else {
         requeue(3000, { refetchTab: true });
@@ -194,7 +195,11 @@ var gsTabSuspendManager = (function() {
     executionProps.suspendedUrl = suspendedUrl;
 
     if (screenCaptureMode === '0') {
-      const success = await executeTabSuspension(tab, suspendedUrl);
+      const success = await executeTabSuspension(
+        tab,
+        suspendedUrl,
+        executionProps.forceLevel
+      );
       resolve(success);
       return;
     }
@@ -256,7 +261,8 @@ var gsTabSuspendManager = (function() {
 
     const success = await executeTabSuspension(
       tab,
-      queuedTabDetails.executionProps.suspendedUrl
+      queuedTabDetails.executionProps.suspendedUrl,
+      queuedTabDetails.executionProps.forceLevel
     );
 
     queuedTabDetails.executionProps.resolveFn(success);
@@ -283,7 +289,8 @@ var gsTabSuspendManager = (function() {
       );
       const success = await executeTabSuspension(
         tab,
-        executionProps.suspendedUrl
+        executionProps.suspendedUrl,
+        executionProps.forceLevel
       );
       resolve(success);
     } else {
@@ -296,7 +303,8 @@ var gsTabSuspendManager = (function() {
     }
   }
 
-  function executeTabSuspension(tab, suspendedUrl) {
+  // forceLevel 1 is a manual request, the only one allowed to switch focus to discard an active tab
+  function executeTabSuspension(tab, suspendedUrl, forceLevel) {
     return new Promise(resolve => {
       // Remove any existing queued tab checks (this can happen if we try to suspend
       // a tab immediately after it gains focus)
@@ -308,7 +316,9 @@ var gsTabSuspendManager = (function() {
       );
       if (discardInPlaceOfSuspend) {
         tgs.clearAutoSuspendTimerForTabId(tab.id);
-        gsTabDiscardManager.queueTabForDiscard(tab);
+        gsTabDiscardManager.queueTabForDiscard(tab, {
+          allowActive: forceLevel === 1,
+        });
         resolve(true);
         return;
       }

@@ -1,4 +1,4 @@
-/*global chrome, tgs, gsUtils, gsChrome, GsTabQueue, gsStorage, gsTabSuspendManager */
+/*global chrome, gsUtils, gsChrome, GsTabQueue */
 // eslint-disable-next-line no-unused-vars
 var gsTabDiscardManager = (function() {
   'use strict';
@@ -74,15 +74,17 @@ var gsTabDiscardManager = (function() {
       requeue();
       return;
     }
-    if (tgs.isCurrentActiveTab(tab)) {
-      const discardInPlaceOfSuspend = gsStorage.getOption(
-        gsStorage.DISCARD_IN_PLACE_OF_SUSPEND
-      );
-      if (!discardInPlaceOfSuspend) {
-        gsUtils.log(tab.id, QUEUE_ID, 'Tab is active. Aborting discard.');
-        resolve(false);
-        return;
-      }
+    // why: only a manual suspend may move focus; other paths must not discard the tab the user just picked
+    if (tab.active && !executionProps.allowActive) {
+      gsUtils.log(tab.id, QUEUE_ID, 'Tab is active. Aborting discard.');
+      resolve(false);
+      return;
+    }
+    // why: chrome.tabs.discard rejects the active tab, so focus a neighbour first
+    if (tab.active && !(await activateNeighbourTab(tab))) {
+      gsUtils.log(tab.id, QUEUE_ID, 'Tab is active with no other tab. Aborting discard.');
+      resolve(false);
+      return;
     }
     if (gsUtils.isDiscardedTab(tab)) {
       gsUtils.log(tab.id, QUEUE_ID, 'Tab already discarded');
@@ -98,6 +100,19 @@ var gsTabDiscardManager = (function() {
         resolve(true);
       }
     });
+  }
+
+  // Activates the tab to the right, else the left, in the same window. Resolves false if none exists.
+  async function activateNeighbourTab(tab) {
+    const windowTabs = await gsChrome.tabsQuery({ windowId: tab.windowId });
+    const sorted = windowTabs.sort((a, b) => a.index - b.index);
+    const position = sorted.findIndex(t => t.id === tab.id);
+    const neighbour = sorted[position + 1] || sorted[position - 1];
+    if (!neighbour) {
+      return false;
+    }
+    const updated = await gsChrome.tabsUpdate(neighbour.id, { active: true });
+    return updated !== null;
   }
 
   function handleDiscardException(
@@ -116,20 +131,9 @@ var gsTabDiscardManager = (function() {
     resolve(false);
   }
 
-  async function handleDiscardedUnsuspendedTab(tab) {
-    if (
-      gsUtils.shouldSuspendDiscardedTabs() &&
-      gsTabSuspendManager.checkTabEligibilityForSuspension(tab, 3)
-    ) {
-      tgs.setTabStatePropForTabId(tab.id, tgs.STATE_SUSPEND_REASON, 3);
-      const suspendedUrl = gsUtils.generateSuspendedUrl(tab.url, tab.title, 0);
-      gsUtils.log(tab.id, QUEUE_ID, 'Suspending discarded unsuspended tab');
-
-      // Note: This bypasses the suspension tab queue and also prevents screenshots from being taken
-      await gsTabSuspendManager.executeTabSuspension(tab, suspendedUrl);
-      return;
-    }
-  }
+  // why: discard is the only suspend mode, so a discarded tab keeps its real url and needs no placeholder
+  // Kept as a no-op because background.js:689 and gsUtils.js:743 still call it.
+  function handleDiscardedUnsuspendedTab() {}
 
   return {
     initAsPromised,

@@ -64,7 +64,7 @@ var gsStorage = {
     defaults[gsStorage.SCREEN_CAPTURE] = '0';
     defaults[gsStorage.SCREEN_CAPTURE_FORCE] = false;
     defaults[gsStorage.SUSPEND_IN_PLACE_OF_DISCARD] = false;
-    defaults[gsStorage.DISCARD_IN_PLACE_OF_SUSPEND] = false;
+    defaults[gsStorage.DISCARD_IN_PLACE_OF_SUSPEND] = true;
     defaults[gsStorage.USE_ALT_SCREEN_CAPTURE_LIB] = false;
     defaults[gsStorage.DISCARD_AFTER_SUSPEND] = false;
     defaults[gsStorage.IGNORE_WHEN_OFFLINE] = false;
@@ -364,6 +364,10 @@ var gsStorage = {
   //due to migration issues and new settings being added, i have built in some redundancy
   //here so that getOption will always return a valid value.
   getOption: function(prop) {
+    // why: discard is the only suspend mode; synced settings may still hold false from older versions
+    if (prop === gsStorage.DISCARD_IN_PLACE_OF_SUSPEND) {
+      return true;
+    }
     var settings = gsStorage.getSettings();
     if (typeof settings[prop] === 'undefined' || settings[prop] === null) {
       settings[prop] = gsStorage.getSettingsDefaults()[prop];
