@@ -3,14 +3,8 @@
   'use strict';
 
   var elementPrefMap = {
-    preview: gsStorage.SCREEN_CAPTURE,
-    forceScreenCapture: gsStorage.SCREEN_CAPTURE_FORCE,
-    cleanScreenCaptures: gsStorage.ENABLE_CLEAN_SCREENCAPS,
-    suspendInPlaceOfDiscard: gsStorage.SUSPEND_IN_PLACE_OF_DISCARD,
     onlineCheck: gsStorage.IGNORE_WHEN_OFFLINE,
     batteryCheck: gsStorage.IGNORE_WHEN_CHARGING,
-    unsuspendOnFocus: gsStorage.UNSUSPEND_ON_FOCUS,
-    discardAfterSuspend: gsStorage.DISCARD_AFTER_SUSPEND,
     dontSuspendPinned: gsStorage.IGNORE_PINNED,
     dontSuspendForms: gsStorage.IGNORE_FORMS,
     dontSuspendAudio: gsStorage.IGNORE_AUDIO,
@@ -20,7 +14,6 @@
     syncSettings: gsStorage.SYNC_SETTINGS,
     noNag: gsStorage.NO_NAG,
     timeToSuspend: gsStorage.SUSPEND_TIME,
-    theme: gsStorage.THEME,
     whitelist: gsStorage.WHITELIST,
   };
 
@@ -57,12 +50,6 @@
       }
     }
 
-    setForceScreenCaptureVisibility(
-      gsStorage.getOption(gsStorage.SCREEN_CAPTURE) !== '0'
-    );
-    setCleanScreenCaptureVisibility(
-      gsStorage.getOption(gsStorage.SCREEN_CAPTURE) !== '0'
-    );
     setAutoSuspendOptionsVisibility(
       parseFloat(gsStorage.getOption(gsStorage.SUSPEND_TIME)) > 0
     );
@@ -107,24 +94,6 @@
     }
   }
 
-  function setForceScreenCaptureVisibility(visible) {
-    if (visible) {
-      document.getElementById('forceScreenCaptureContainer').style.display =
-        'block';
-    } else {
-      document.getElementById('forceScreenCaptureContainer').style.display =
-        'none';
-    }
-  }
-
-  function setCleanScreenCaptureVisibility(visible) {
-    if (visible) {
-      document.getElementById('cleanScreenCapturesContainer').style.display = 'block';
-    } else {
-      document.getElementById('cleanScreenCapturesContainer').style.display = 'none';
-    }
-  }
-
   function setSyncNoteVisibility(visible) {
     if (visible) {
       document.getElementById('syncNote').style.display = 'block';
@@ -152,10 +121,6 @@
         interval;
       //add specific screen element listeners
       switch (prefKey) {
-        case gsStorage.SCREEN_CAPTURE:
-          setForceScreenCaptureVisibility(getOptionValue(element) !== '0');
-          setCleanScreenCaptureVisibility(getOptionValue(element) !== '0');
-          break;
         case gsStorage.SUSPEND_TIME:
           interval = getOptionValue(element);
           setAutoSuspendOptionsVisibility(interval > 0);
